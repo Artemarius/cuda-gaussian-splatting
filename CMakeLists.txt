@@ -82,6 +82,17 @@ target_link_libraries(cugs_utils PUBLIC
 target_include_directories(cugs_utils PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 
 # -----------------------------------------------------------------------------
+# Internal library: cugs_data
+# -----------------------------------------------------------------------------
+add_library(cugs_data
+    src/data/colmap_loader.cpp
+    src/data/image_io.cpp
+    src/data/dataset.cpp
+)
+
+target_link_libraries(cugs_data PUBLIC cugs_utils)
+
+# -----------------------------------------------------------------------------
 # Put all executables in the build root so they can find DLLs.
 # For multi-config generators (VS), use per-config output dirs.
 # -----------------------------------------------------------------------------

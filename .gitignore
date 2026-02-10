@@ -48,9 +48,9 @@ external/
 out/
 vcpkg_installed/
 
-# Data and output
-data/
-datasets/
+# Data and output (top-level only, not src/data/)
+/data/
+/datasets/
 output/
 *.ply
 

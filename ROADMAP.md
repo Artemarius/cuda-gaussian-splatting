@@ -34,7 +34,7 @@ The RTX 3060 6GB is sufficient for development but will hit limits on large scen
   - `dev` — VS 2022 generator, Debug/RelWithDebInfo, for IDE debugging
   - `release` — Ninja generator, Release, for fast builds
 - [x] Set up `vcpkg.json` manifest for: Eigen3, spdlog, gtest, nlohmann-json, glfw3, imgui
-- [ ] Download and configure libtorch (C++ CUDA-enabled Windows distribution) in `external/libtorch/`
+- [x] Download and configure libtorch (C++ CUDA-enabled Windows distribution) in `external/libtorch/`
   - **Watch out**: libtorch uses `/MD` — ensure the whole project uses `/MD` consistently
   - Set `CMAKE_PREFIX_PATH` to libtorch directory
 - [x] Create directory structure:
@@ -48,8 +48,8 @@ The RTX 3060 6GB is sufficient for development but will hit limits on large scen
   - `CUDA_SYNC_CHECK()` for debug builds
   - VRAM usage query helper (`vram_used_mb()`, `vram_free_mb()`)
 - [x] Write a trivial `apps/hello_cuda.cpp` + `src/utils/cuda_info.cu` that launches a kernel and prints GPU info
-- [ ] Verify: `cmake --preset dev`, open `.sln`, build, run, see GPU info printed
-- [ ] Verify: `cmake --preset release && cmake --build build-release`
+- [x] Verify: `cmake --preset dev`, open `.sln`, build, run, see GPU info printed
+- [x] Verify: `cmake --preset release && cmake --build build-release`
 - [x] Write first Google Test: `tests/test_cuda_utils.cpp` — verify GPU is accessible
 
 ### Key CMake Notes (Windows/MSVC)
@@ -85,20 +85,20 @@ COLMAP outputs binary files: `cameras.bin`, `images.bin`, `points3D.bin`. These 
 
 ### Tasks
 
-- [ ] `src/data/colmap_loader.hpp/.cpp` — binary parser for COLMAP format
+- [x] `src/data/colmap_loader.hpp/.cpp` — binary parser for COLMAP format
   - Parse `cameras.bin`: camera model ID, width, height, params (fx, fy, cx, cy, distortion)
   - Parse `images.bin`: image ID, quaternion (COLMAP uses wxyz), translation, camera ID, filename
   - Parse `points3D.bin`: XYZ position, RGB color, reprojection error, track (which images see it)
   - Support at least SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL camera models
   - **Note**: COLMAP stores world-to-camera rotation and translation. The camera center in world coords is `C = -R^T * t`
-- [ ] `src/data/image_io.hpp/.cpp` — image loading via stb_image
+- [x] `src/data/image_io.hpp/.cpp` — image loading via stb_image
   - Load images, convert to float [0,1], handle RGB/RGBA
   - Resize support for memory-constrained development
-- [ ] `src/data/dataset.hpp/.cpp` — dataset abstraction
+- [x] `src/data/dataset.hpp/.cpp` — dataset abstraction
   - Combines cameras, images, sparse points
   - Train/test split (COLMAP convention: every 8th image for test)
   - Provides iterators for training loop
-- [ ] `src/core/types.hpp` — define core structs:
+- [x] `src/core/types.hpp` — define core structs:
   ```cpp
   struct Camera {
       int width, height;
@@ -108,7 +108,7 @@ COLMAP outputs binary files: `cameras.bin`, `images.bin`, `points3D.bin`. These 
   };
   ```
 - [ ] Download a small test dataset (e.g., Truck from Tanks & Temples)
-- [ ] **Sanity check**: write a test that loads the dataset and verifies:
+- [x] **Sanity check**: write a test that loads the dataset and verifies:
   - Number of cameras/images matches expected
   - Sparse points are in a reasonable bounding box
   - Camera centers (computed from extrinsics) form a reasonable pattern around the scene
