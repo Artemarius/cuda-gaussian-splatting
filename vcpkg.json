@@ -1,0 +1,16 @@
+{
+  "name": "cuda-gaussian-splatting",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "eigen3",
+    "spdlog",
+    "gtest",
+    "nlohmann-json",
+    "glfw3",
+    {
+      "name": "imgui",
+      "features": ["glfw-binding", "opengl3-binding"]
+    },
+    "stb"
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "vcpkg-base",
+      "hidden": true,
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": {
+          "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+          "type": "FILEPATH"
+        }
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Dev (VS 2022, RelWithDebInfo)",
+      "description": "Visual Studio generator for IDE debugging",
+      "inherits": "vcpkg-base",
+      "generator": "Visual Studio 17 2022",
+      "binaryDir": "${sourceDir}/build-dev",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release (Ninja)",
+      "description": "Ninja generator for fast release builds",
+      "inherits": "vcpkg-base",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    }
+  ]
+}

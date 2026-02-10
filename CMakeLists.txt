@@ -1,0 +1,73 @@
+cmake_minimum_required(VERSION 3.24 FATAL_ERROR)
+project(cuda-gaussian-splatting LANGUAGES CXX CUDA)
+
+# -----------------------------------------------------------------------------
+# Standards
+# -----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_STANDARD 20)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+# RTX 3060 (compute capability 8.6)
+set(CMAKE_CUDA_ARCHITECTURES 86)
+
+# -----------------------------------------------------------------------------
+# Compiler flags (MSVC)
+# -----------------------------------------------------------------------------
+if(MSVC)
+    add_compile_options(/W4 /utf-8 /permissive-)
+    # libtorch ships with /MD — match it across the whole project.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+
+# libtorch — set CMAKE_PREFIX_PATH to external/libtorch on the command line or
+# in CMakePresets.json if it isn't found automatically.
+find_package(Torch REQUIRED)
+
+find_package(Eigen3 CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(glfw3 CONFIG REQUIRED)
+find_package(GTest CONFIG REQUIRED)
+
+# stb — header-only, pulled via vcpkg
+find_path(STB_INCLUDE_DIR stb_image.h PATH_SUFFIXES stb)
+
+# -----------------------------------------------------------------------------
+# Internal library: cugs_utils
+# -----------------------------------------------------------------------------
+add_library(cugs_utils
+    src/utils/cuda_info.cu
+)
+
+target_include_directories(cugs_utils PUBLIC
+    ${CMAKE_SOURCE_DIR}/src
+    ${STB_INCLUDE_DIR}
+)
+
+target_link_libraries(cugs_utils PUBLIC
+    ${TORCH_LIBRARIES}
+    Eigen3::Eigen
+    spdlog::spdlog
+    nlohmann_json::nlohmann_json
+)
+
+set_target_properties(cugs_utils PROPERTIES
+    CUDA_SEPARABLE_COMPILATION ON
+)
+
+# Propagate CUDA include directories so .cpp files can include cuda_runtime.h
+target_include_directories(cugs_utils PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+
+# -----------------------------------------------------------------------------
+# Subdirectories
+# -----------------------------------------------------------------------------
+add_subdirectory(apps)
+
+enable_testing()
+add_subdirectory(tests)
