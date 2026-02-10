@@ -46,6 +46,7 @@ build-dev/
 cmake-build-*/
 external/
 out/
+vcpkg_installed/
 
 # Data and output
 data/
@@ -69,6 +70,15 @@ output/
 
 # Private project planning (not for public)
 PROJECT.md
+
+# Build scripts and logs (local dev helpers)
+build_*.ps1
+build_*.bat
+*_log.txt
+*_log*.txt
+
+# Windows artifacts
+nul
 
 # AI tooling configs (personal dev environment)
 .claude/

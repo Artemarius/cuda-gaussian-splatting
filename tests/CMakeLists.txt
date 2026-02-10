@@ -6,4 +6,4 @@ target_link_libraries(test_cuda_utils PRIVATE
 )
 
 include(GoogleTest)
-gtest_discover_tests(test_cuda_utils)
+gtest_discover_tests(test_cuda_utils DISCOVERY_MODE PRE_TEST)

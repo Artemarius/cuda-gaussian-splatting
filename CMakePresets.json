@@ -8,6 +8,14 @@
         "CMAKE_TOOLCHAIN_FILE": {
           "value": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
           "type": "FILEPATH"
+        },
+        "CMAKE_PREFIX_PATH": {
+          "value": "${sourceDir}/external/libtorch",
+          "type": "PATH"
+        },
+        "CUDAToolkit_ROOT": {
+          "value": "D:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.8",
+          "type": "PATH"
         }
       }
     },
