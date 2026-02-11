@@ -57,10 +57,11 @@ find_package(GTest CONFIG REQUIRED)
 find_path(STB_INCLUDE_DIR stb_image.h PATH_SUFFIXES stb)
 
 # -----------------------------------------------------------------------------
-# Internal library: cugs_utils
+# Internal library: cugs_utils (CUDA sources)
 # -----------------------------------------------------------------------------
 add_library(cugs_utils
     src/utils/cuda_info.cu
+    src/core/sh.cu
 )
 
 target_include_directories(cugs_utils PUBLIC
@@ -89,6 +90,9 @@ add_library(cugs_data
     src/data/image_io.cpp
     src/data/dataset.cpp
     src/utils/ply_io.cpp
+    src/core/gaussian.cpp
+    src/core/gaussian_init.cpp
+    src/core/sh.cpp
 )
 
 target_link_libraries(cugs_data PUBLIC cugs_utils)

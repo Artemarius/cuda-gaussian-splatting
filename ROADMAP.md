@@ -143,7 +143,7 @@ The initial Gaussians come from COLMAP sparse points. Initial values:
 
 ### Tasks
 
-- [ ] `src/core/gaussian.hpp` — Gaussian parameter storage
+- [x] `src/core/gaussian.hpp` — Gaussian parameter storage
   - Design decision: Structure of Arrays (SoA) for GPU efficiency, not AoS
   - Store all parameters as contiguous `torch::Tensor` buffers:
     ```cpp
@@ -157,16 +157,16 @@ The initial Gaussians come from COLMAP sparse points. Initial values:
     ```
   - All parameters in their activation-function-friendly spaces (log scale, logit opacity, raw quaternion)
   - Methods: `num_gaussians()`, `to_device()`, `save_ply()`, `load_ply()`
-- [ ] `src/core/sh.hpp/.cu` — Spherical Harmonics evaluation
+- [x] `src/core/sh.hpp/.cu` — Spherical Harmonics evaluation
   - SH basis functions up to degree 3
   - `evaluate_sh(degree, sh_coeffs, direction)` → RGB color
   - CPU reference implementation first, then CUDA kernel
   - **Reference**: Appendix A of the original paper, or Ramamoorthi & Hanrahan 2001
-- [ ] `src/core/gaussian_init.cpp` — initialization from sparse points
+- [x] `src/core/gaussian_init.cpp` — initialization from sparse points
   - k-NN for scale initialization (use a simple brute-force or spatial hash for now)
   - SH coefficient initialization from point colors
   - Reasonable defaults for opacity and rotation
-- [ ] `src/utils/ply_io.hpp/.cpp` — PLY writer/reader for Gaussian models
+- [x] `src/utils/ply_io.hpp/.cpp` — PLY writer/reader for Gaussian models
   - Match the format used by the reference implementation for compatibility with existing viewers
 
 ### Tests
