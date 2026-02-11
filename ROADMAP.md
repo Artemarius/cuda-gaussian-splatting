@@ -198,56 +198,60 @@ The forward pass:
 
 #### Phase 3a: Projection (CUDA kernel)
 
-- [ ] `src/rasterizer/projection.cuh/.cu`
-  - `k_project_gaussians` kernel: for each Gaussian, compute:
-    - View-space position: `p_view = W * p_world` (W = world-to-camera)
-    - NDC position: apply intrinsics to get 2D screen coords
-    - 2D covariance: `Σ' = J W Σ Wᵀ Jᵀ` where J is Jacobian of perspective projection
-    - 3D covariance from quaternion + scale: `Σ = R S Sᵀ Rᵀ`
-    - Bounding rect in screen space (clip to image bounds)
-    - Frustum culling: skip Gaussians behind camera or outside image
-  - One thread per Gaussian
-  - Output: 2D means, 2D covariances (upper triangle: 3 floats), depths, radii, tile ranges
+- [x] `src/rasterizer/projection.cuh` — `__device__` math helpers:
+  - `quat_to_rotation()` — quaternion to 3×3 rotation matrix
+  - `compute_cov_3d()` — 3D covariance from rotation + log-scale: `Σ = R S Sᵀ Rᵀ`
+  - `compute_cov_2d()` — project 3D covariance to 2D via Jacobian: `Σ' = J W Σ Wᵀ Jᵀ + 0.3I`
+  - `compute_radius()` — pixel radius from 2D covariance eigenvalues (3σ)
+  - `compute_cov_2d_inverse()` — inverse of 2×2 symmetric matrix
+- [x] `src/rasterizer/projection.cu` — `k_project_gaussians` kernel + host launcher
+  - One thread per Gaussian (256 threads/block)
+  - Transform to camera space, frustum cull, project to screen, compute cov, radius, tile count
+  - SH evaluation via existing `evaluate_sh_cuda()` for view-dependent colors
+  - Output: means_2d, depths, cov_2d_inv, radii, tiles_touched, rgb, sigmoid opacities
+- [x] `src/rasterizer/projection.hpp` — host-side `ProjectionOutput` struct and `project_gaussians()` declaration
 
 **Math reference** (equation numbers from Kerbl et al.):
 - 3D covariance: Eq. 6 — `Σ = R S Sᵀ Rᵀ`
-- 2D covariance: Eq. 5 — `Σ' = J W Σ Wᵀ Jᵀ` (the paper adds a small ε to diagonal for numerical stability)
+- 2D covariance: Eq. 5 — `Σ' = J W Σ Wᵀ Jᵀ` (adds 0.3 to diagonal for numerical stability / anti-aliasing)
 - Jacobian J: from Zwicker et al., EWA Splatting — Jacobian of the local affine approximation of the projective transform
 
 #### Phase 3b: Tile Assignment & Sorting
 
-- [ ] `src/rasterizer/sorting.cuh/.cu`
-  - Determine which tiles each Gaussian overlaps (from bounding rect)
-  - Create (tile_id, depth) key pairs, one per Gaussian-tile intersection
-  - Sort by key using `cub::DeviceRadixSort` — tile_id in high bits, depth in low bits
-  - Compute per-tile start/end offsets into the sorted array
-  - This is the standard approach from the reference implementation
+- [x] `src/rasterizer/sorting.hpp` — `SortingOutput` struct, `sort_gaussians()` declaration, `kTileSize=16`
+- [x] `src/rasterizer/sorting.cu` — three kernels + CUB sort:
+  - Prefix sum on `tiles_touched` → per-Gaussian offsets + total pair count P
+  - `k_fill_sort_pairs` — writes `(tile_id << 32 | depth_bits, gaussian_idx)` pairs
+  - `cub::DeviceRadixSort::SortPairs` on uint64 keys
+  - `k_compute_tile_ranges` — detects tile boundaries → `tile_ranges[num_tiles, 2]`
 
 #### Phase 3c: Rasterization (Alpha Compositing)
 
-- [ ] `src/rasterizer/forward.cuh/.cu`
-  - `k_rasterize_forward` kernel:
-    - One thread block per tile (16×16 = 256 threads per block, one thread per pixel)
-    - Load Gaussians for this tile in batches (shared memory)
-    - For each Gaussian: compute 2D Gaussian weight at this pixel, multiply by opacity
-    - Alpha-composite front-to-back: `C += cᵢ αᵢ T`, `T *= (1 - αᵢ)`
-    - Early termination when transmittance T < threshold (e.g., 1/255)
-    - Store per-pixel: final color, number of contributing Gaussians (for backward pass)
-  - **Critical**: track the index of the last contributing Gaussian per pixel (needed for backward pass)
+- [x] `src/rasterizer/forward.cuh` — `SharedGaussian` struct (40 bytes), block constants
+- [x] `src/rasterizer/forward.cu` — `k_rasterize_forward` kernel + host launcher
+  - Grid: `dim3(num_tiles_x, num_tiles_y)`, Block: `dim3(16, 16)` = 256 threads
+  - Shared memory: batch of 256 `SharedGaussian` entries (10 KB per block)
+  - Per pixel: accumulate `color += rgb * alpha * T; T *= (1 - alpha)`
+  - Early termination when `T < 1/255`
+  - Tracks `n_contrib` per pixel (for backward pass)
+  - Final blend: `color += T * background`
+- [x] `src/rasterizer/forward.hpp` — `ForwardOutput` struct, `rasterize_forward()` declaration
 
 #### Phase 3d: Host API
 
-- [ ] `src/rasterizer/rasterizer.hpp/.cpp`
-  - Clean host-side API: `RenderOutput render(GaussianModel&, Camera&, RenderSettings&)`
-  - Orchestrates: projection → sorting → rasterization
-  - Returns rendered image as tensor
-  - `RenderSettings`: image size, background color, SH degree to use, near/far planes
+- [x] `src/rasterizer/rasterizer.hpp` — public `RenderSettings`, `RenderOutput` structs, `render()` declaration
+- [x] `src/rasterizer/rasterizer.cpp` — host orchestration:
+  - Converts CameraInfo to raw float view matrix (Eigen → raw array, avoids Eigen in CUDA)
+  - Calls `project_gaussians()` (includes SH eval)
+  - Calls `sort_gaussians()`
+  - Calls `rasterize_forward()`
+  - Packs all intermediates into `RenderOutput` (retained for backward pass)
 
 ### Validation Strategy
 
-- [ ] **Gradient-free visual test**: initialize random Gaussians, render, verify output looks like colored blobs
-- [ ] **Single Gaussian test**: place one Gaussian at known position, render, verify it appears as expected ellipse
-- [ ] **Depth ordering test**: two overlapping Gaussians at different depths, verify front one occludes back
+- [x] **Gradient-free visual test**: random Gaussians render without NaN/Inf, produce colored output
+- [x] **Single Gaussian test**: place one Gaussian at known position, verify 2D mean/depth/color are correct
+- [x] **Depth ordering test**: two overlapping Gaussians at different depths, front Gaussian dominates
 - [ ] **Render the initial sparse Gaussians**: load a dataset, initialize Gaussians, render from training camera — should see a noisy but recognizable point cloud rendering
 - [ ] Compare output against the reference implementation on the same input (if possible)
 
@@ -259,8 +263,17 @@ The forward pass:
 
 ### Tests
 
-- `tests/test_projection.cpp` — verify 2D covariance against CPU reference
-- `tests/test_rasterizer.cpp` — render known configurations, compare to expected output
+- [x] `tests/test_projection.cpp` — 7 tests: single Gaussian in front, behind-camera culling, off-center projection, batch no-NaN, anisotropic, empty input, scale modifier
+- [x] `tests/test_rasterizer.cpp` — 7 tests: empty scene background, single Gaussian center pixel, depth ordering, background blending, random no-NaN, transmittance/contrib, output shapes
+
+### Architecture Note — .hpp vs .cuh split
+
+MSVC compiles `.cpp` files and cannot handle `__device__` code. Each module uses:
+- `.hpp` — host-only declarations (included by `.cpp` and `.cu`)
+- `.cuh` — `__device__` helpers (included only by `.cu` files)
+- `.cu` — kernel implementations + host launchers
+
+`rasterizer.cpp` includes only `.hpp` headers, compiling cleanly with MSVC.
 
 ### Definition of Done
 

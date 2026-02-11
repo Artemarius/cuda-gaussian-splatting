@@ -48,6 +48,20 @@ target_link_libraries(test_gaussian_init PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_projection test_projection.cpp)
+
+target_link_libraries(test_projection PRIVATE
+    cugs_rasterizer
+    GTest::gtest_main
+)
+
+add_executable(test_rasterizer test_rasterizer.cpp)
+
+target_link_libraries(test_rasterizer PRIVATE
+    cugs_rasterizer
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(test_cuda_utils DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_colmap_loader DISCOVERY_MODE PRE_TEST)
@@ -56,3 +70,5 @@ gtest_discover_tests(test_ply_io DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_gaussian_model DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_sh DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_gaussian_init DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(test_projection DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(test_rasterizer DISCOVERY_MODE PRE_TEST)

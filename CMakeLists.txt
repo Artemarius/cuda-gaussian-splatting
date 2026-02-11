@@ -98,6 +98,18 @@ add_library(cugs_data
 target_link_libraries(cugs_data PUBLIC cugs_utils)
 
 # -----------------------------------------------------------------------------
+# Internal library: cugs_rasterizer (CUDA rasterization pipeline)
+# -----------------------------------------------------------------------------
+add_library(cugs_rasterizer
+    src/rasterizer/projection.cu
+    src/rasterizer/sorting.cu
+    src/rasterizer/forward.cu
+    src/rasterizer/rasterizer.cpp
+)
+
+target_link_libraries(cugs_rasterizer PUBLIC cugs_utils cugs_data)
+
+# -----------------------------------------------------------------------------
 # Put all executables in the build root so they can find DLLs.
 # For multi-config generators (VS), use per-config output dirs.
 # -----------------------------------------------------------------------------
