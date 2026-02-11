@@ -88,6 +88,7 @@ add_library(cugs_data
     src/data/colmap_loader.cpp
     src/data/image_io.cpp
     src/data/dataset.cpp
+    src/utils/ply_io.cpp
 )
 
 target_link_libraries(cugs_data PUBLIC cugs_utils)

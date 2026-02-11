@@ -107,12 +107,12 @@ COLMAP outputs binary files: `cameras.bin`, `images.bin`, `points3D.bin`. These 
       Eigen::Matrix4f world_to_camera;  // extrinsics
   };
   ```
-- [ ] Download a small test dataset (e.g., Truck from Tanks & Temples)
+- [x] Download a small test dataset (e.g., Truck from Tanks & Temples)
 - [x] **Sanity check**: write a test that loads the dataset and verifies:
   - Number of cameras/images matches expected
   - Sparse points are in a reasonable bounding box
   - Camera centers (computed from extrinsics) form a reasonable pattern around the scene
-- [ ] (Optional) Write a quick point cloud dumper to PLY for visual verification in MeshLab/CloudCompare
+- [x] (Optional) Write a quick point cloud dumper to PLY for visual verification in MeshLab/CloudCompare
 
 ### Tests
 

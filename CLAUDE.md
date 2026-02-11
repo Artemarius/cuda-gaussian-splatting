@@ -37,6 +37,8 @@ benchmarks/    — Performance benchmarks
 
 ## Build & Run
 
+**Always use the build agent (`agents/build.md`) for all build tasks** — configuring, compiling, and running tests. Spawn it via the Task tool with the `agents/build.md` context. Do not attempt manual cmake/build commands.
+
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
 cmake --build build -- -j$(nproc)

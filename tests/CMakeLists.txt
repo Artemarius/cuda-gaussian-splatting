@@ -19,7 +19,15 @@ target_link_libraries(test_dataset PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_ply_io test_ply_io.cpp)
+
+target_link_libraries(test_ply_io PRIVATE
+    cugs_data
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(test_cuda_utils DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_colmap_loader DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_dataset DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(test_ply_io DISCOVERY_MODE PRE_TEST)
