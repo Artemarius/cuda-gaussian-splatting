@@ -291,19 +291,30 @@ The training loss is: `L = (1 - λ) L₁ + λ L_SSIM`, where λ = 0.2 (paper def
 
 ### Tasks
 
-- [ ] `src/training/loss.hpp/.cu`
-  - **L1 loss**: trivial, per-pixel absolute difference, mean reduction
-  - **SSIM loss**: `1 - SSIM(rendered, target)`
-    - SSIM uses 11×11 Gaussian-weighted window (σ = 1.5)
-    - Compute per-channel: luminance, contrast, structure terms
-    - Can implement as 2D convolution with Gaussian kernel (separable for efficiency)
-    - Use CUDA for the convolution, or libtorch's `conv2d` as initial implementation
-  - Combined loss with configurable λ
-- [ ] Verify SSIM against a known implementation (e.g., compute on identical images → should be 1.0)
+- [x] `src/training/loss.hpp` — public API: `l1_loss`, `ssim`, `ssim_loss`, `combined_loss`
+  - All functions accept `[H, W, 3]` float32 CUDA tensors (matching `RenderOutput::color` layout)
+  - `ssim()` returns per-pixel map `[H, W]` for reuse in Phase 9 evaluation metrics
+- [x] `src/training/loss.cpp` — implementation using libtorch ops (`.cpp`, not `.cu`)
+  - **L1 loss**: `(rendered - target).abs().mean()`
+  - **SSIM** (Wang et al. 2004): Gaussian-weighted 11×11 window (σ=1.5), `conv2d` with `groups=3` dispatches to cuDNN on CUDA tensors
+  - **Combined loss**: `(1 - λ) * L1 + λ * (1 - mean SSIM)`
+  - Gaussian kernel cached as static to avoid recreating per call
+- [x] Verify SSIM against known properties: identical images → 1.0, very different images → low, symmetry
+- [x] CMake: added `cugs_training` library target, linked to `cugs_utils`
+
+### Implementation Notes
+
+- Used `.cpp` not `.cu` — libtorch's `conv2d` handles GPU dispatch automatically, no custom kernels needed
+- `l1_loss` calls require `::cugs::` qualification to avoid ADL ambiguity with `at::l1_loss` from libtorch
+- Input validation via `TORCH_CHECK()` for shape, dtype, device
 
 ### Tests
 
-- `tests/test_loss.cpp` — L1 of identical images = 0, SSIM of identical images = 1.0, known difference values
+- [x] `tests/test_loss.cpp` — 10 tests:
+  - L1: identical=0, known difference=0.5, non-negative
+  - SSIM: identical≈1.0, different<0.1, symmetry, range [-1,1]
+  - Combined: identical≈0, closer images → lower loss
+  - Input validation: mismatched shapes, wrong channels, CPU tensors, wrong dtype, even window_size
 
 ### Definition of Done
 

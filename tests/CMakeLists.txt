@@ -62,7 +62,15 @@ target_link_libraries(test_rasterizer PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_loss test_loss.cpp)
+
+target_link_libraries(test_loss PRIVATE
+    cugs_training
+    GTest::gtest_main
+)
+
 include(GoogleTest)
+gtest_discover_tests(test_loss DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_cuda_utils DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_colmap_loader DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_dataset DISCOVERY_MODE PRE_TEST)

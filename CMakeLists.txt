@@ -110,6 +110,15 @@ add_library(cugs_rasterizer
 target_link_libraries(cugs_rasterizer PUBLIC cugs_utils cugs_data)
 
 # -----------------------------------------------------------------------------
+# Internal library: cugs_training (loss functions, training loop)
+# -----------------------------------------------------------------------------
+add_library(cugs_training
+    src/training/loss.cpp
+)
+
+target_link_libraries(cugs_training PUBLIC cugs_utils)
+
+# -----------------------------------------------------------------------------
 # Put all executables in the build root so they can find DLLs.
 # For multi-config generators (VS), use per-config output dirs.
 # -----------------------------------------------------------------------------
