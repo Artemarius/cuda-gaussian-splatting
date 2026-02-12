@@ -595,13 +595,17 @@ The standard Adam update requires multiple kernel launches per parameter: comput
 
 ### Tasks
 
-- [ ] `src/optimizer/fused_adam.cuh/.cu`
-  - Single kernel: reads gradient, updates m (first moment), v (second moment), applies bias-corrected update
-  - Handle per-parameter learning rates
-  - Template on parameter count per element (3 for position, 4 for quaternion, etc.)
-  - Epsilon, beta1, beta2 as kernel parameters
+- [x] `src/optimizer/fused_adam.hpp` — FusedAdam class declaration with identical API to GaussianAdam
+  - Self-managed Adam state: m_[5], v_[5] (moment tensors), grads_[5] (gradient refs), learning_rates_[5], step_count_
+  - No dependency on torch::optim::Adam
+- [x] `src/optimizer/fused_adam.cu` — k_fused_adam kernel + class implementation
+  - Single kernel per parameter group: reads gradient, updates m/v in-place, writes bias-corrected param update
+  - 256 threads/block, one thread per float element
+  - Bias correction factors pre-computed on host in double precision for early-step accuracy
+  - launch_kernel() private helper: validates tensors, ensures contiguity, computes grid dims, CUDA_CHECK()
+- [x] Swapped trainer to use FusedAdam (trainer.hpp + trainer.cpp)
+- [x] Ensure training results are numerically equivalent (within floating point tolerance)
 - [ ] Benchmark against libtorch Adam — expect 1.5-2.5x speedup on the optimizer step
-- [ ] Ensure training results are numerically equivalent (within floating point tolerance)
 
 ### Tests
 

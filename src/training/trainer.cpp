@@ -83,7 +83,7 @@ Trainer::Trainer(const TrainConfig& config)
     model_.to_device(torch::kCUDA);
 
     // Create optimizer.
-    optimizer_ = std::make_unique<GaussianAdam>(model_, config_.adam);
+    optimizer_ = std::make_unique<FusedAdam>(model_, config_.adam);
 
     // Compute effective VRAM limit.
     effective_vram_limit_ = compute_effective_vram_limit(config_.memory);
@@ -240,7 +240,7 @@ IterationStats Trainer::train_step(int step) {
             if (dstats.num_cloned > 0 || dstats.num_split > 0 ||
                 dstats.num_pruned > 0) {
                 // Model changed size — rebuild optimizer (Adam moments invalid).
-                optimizer_ = std::make_unique<GaussianAdam>(
+                optimizer_ = std::make_unique<FusedAdam>(
                     model_, config_.adam);
                 optimizer_->update_lr(step);
 

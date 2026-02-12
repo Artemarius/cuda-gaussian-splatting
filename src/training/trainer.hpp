@@ -8,7 +8,7 @@
 
 #include "core/gaussian.hpp"
 #include "data/dataset.hpp"
-#include "optimizer/adam.hpp"
+#include "optimizer/fused_adam.hpp"
 #include "optimizer/densification.hpp"
 #include "training/lr_schedule.hpp"
 #include "utils/memory_monitor.hpp"
@@ -125,7 +125,7 @@ private:
     TrainConfig config_;
     Dataset dataset_;
     GaussianModel model_;
-    std::unique_ptr<GaussianAdam> optimizer_;
+    std::unique_ptr<FusedAdam> optimizer_;
     std::unique_ptr<DensificationController> densify_ctrl_;
     std::mt19937 rng_;
 
