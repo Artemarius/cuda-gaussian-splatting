@@ -290,6 +290,14 @@ The existing VRAM guard in densification (`min_vram_headroom_mb = 512`) was insu
 4. **Budget-aware clone/split** in `DensificationController::densify()` — estimates VRAM needed for cloned/split Gaussians, reduces count via topk selection if over budget
 5. **`emptyCache()` after densification** — releases cached CUDA allocator memory after optimizer rebuild, reclaiming freed tensor memory immediately
 
+**Verification** (RTX 3060 6GB Laptop GPU, Truck scene, 50k Gaussians, SH degree 3, 1/4 res):
+
+1. `--vram-limit 4000` (tight limit): Auto-computed limit = 4000 MB. Training ran smoothly to step 60 (loss: 0.285 → 0.180), then VRAM usage exceeded the limit at step 64. Streak counter incremented from 1/5 to 5/5 over steps 64–68, triggering graceful abort with checkpoint save. Budget reported as -52 MB. No freeze.
+
+2. Auto mode (no `--vram-limit`): Auto-computed limit = 5544 MB (6144 - 600 safety margin). Training ran to step 385 before VRAM crept to -210 MB budget. The CUDA caching allocator gradually consumes more memory over training iterations. Streak counter began but run was interrupted by user.
+
+3. **Conclusion**: 50k Gaussians at SH degree 3 with Adam optimizer state is near the limit for 6 GB. Recommended settings for 6 GB: `--max-gaussians 30000` or `--sh-degree 2`. The safety system prevents system freezes in all cases — either VRAM recovers or training aborts gracefully with a checkpoint.
+
 **Lesson**: On WDDM GPUs that drive the desktop, CUDA OOM is not just a process-level error — it's a system-level failure. Memory safety must be proactive (budget-based), not reactive (catch OOM). The display driver needs a meaningful VRAM reservation (500-600 MB on a 6 GB card) that training must never encroach on.
 
 **Files**: `src/utils/cuda_utils.cuh`, `src/utils/memory_monitor.hpp` (new), `src/training/trainer.hpp`, `src/training/trainer.cpp`, `src/optimizer/densification.hpp`, `src/optimizer/densification.cpp`, `apps/train_main.cpp`

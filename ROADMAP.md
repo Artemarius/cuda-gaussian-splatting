@@ -528,6 +528,26 @@ The original paper's densification strategy (every 100 iterations, starting at 5
   - `--vram-limit <MB>` CLI flag for manual override
   - Default: auto-reserves 600 MB for display driver on WDDM GPUs
 
+### Memory Safety Test Runs (Truck scene, RTX 3060 6GB Laptop GPU)
+
+```
+build\train -d data\tandt\truck -o output\truck_memsafe -i 1000 -r 4 --max-gaussians 50000 --log-every 10
+```
+
+| Test | VRAM Limit | Result |
+|---|---|---|
+| `--vram-limit 4000` | 4000 MB (user-set) | Trained to step 68, graceful abort after 5 consecutive critical readings (budget: -52 MB). Checkpoint saved. No freeze. |
+| Auto mode (no flag) | 5544 MB (auto: 6144 - 600) | Trained to step 385 before VRAM crept to -210 MB budget. CUDA caching allocator gradually consumed memory. Streak began, run interrupted by user. |
+
+**Startup memory**: 1046 / 6144 MB VRAM, ~49 GB / 65 GB RAM available.
+
+**Observations**:
+- 50k Gaussians at SH degree 3 with Adam state is near the 6 GB limit even without densification
+- The CUDA caching allocator accumulates fragmented memory over iterations, causing steady VRAM growth
+- `emptyCache()` reclaims memory after densification but cannot address per-iteration allocator growth
+- Recommended 6 GB settings: `--max-gaussians 30000` or `--sh-degree 2` with auto VRAM limit
+- Gaussian init still takes ~4 min for 136k points (O(n²) kNN) before capping to 50k
+
 ### Key Design Decisions
 
 1. **Optimizer reconstruction after densification**: destroy and rebuild `GaussianAdam` when N changes. Adam moments become invalid after tensor resize. Momentum rebuilds within ~100 iterations.
