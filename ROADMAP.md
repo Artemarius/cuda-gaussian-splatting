@@ -500,16 +500,36 @@ The original paper's densification strategy (every 100 iterations, starting at 5
 
 ### Tasks
 
-- [ ] `src/optimizer/densification.hpp/.cpp` — original densification strategy
-  - Accumulate position gradient magnitudes over iterations between densification steps
-  - Clone/split/prune logic
-  - Handle parameter tensor resizing (add/remove rows) — this is fiddly with libtorch
-  - Reset optimizer state (Adam moments) for new Gaussians
-  - **Memory-aware**: check VRAM before adding Gaussians, skip densification if near limit
+- [x] `src/optimizer/densification.hpp` — `DensificationConfig`, `DensificationStats`, `DensificationController` class
+  - `DensificationConfig`: schedule params (from/until/every), thresholds (grad, opacity, percent_dense, max_screen_size), capacity (max_gaussians, min_vram_headroom_mb)
+  - `DensificationController`: accumulates per-Gaussian gradient norms, runs clone/split/prune cycle
+- [x] `src/optimizer/densification.cpp` — full implementation using libtorch tensor ops
+  - **Clone**: duplicate small Gaussians (`max(exp(scale)) < percent_dense * scene_extent`) with high avg gradient
+  - **Split**: replace large Gaussians with 2 children (scale reduced by `log(1.6)`, positions jittered by `randn * exp(new_scale)`)
+  - **Prune**: remove Gaussians with `sigmoid(opacity) < threshold` or `screen_radius > max_screen_size`; remove originals that were split
+  - **Opacity reset**: set all opacities to `inverse_sigmoid(0.01) ≈ -4.595` every 3000 steps
+  - **VRAM guard**: skip densification if `cudaMemGetInfo` reports free VRAM below headroom
+  - Budget-limited cloning/splitting: respects `max_gaussians` cap, selects highest-gradient candidates when budget is tight
+  - Lazy accumulator init/reset after densification handles changing N gracefully
+- [x] `src/training/trainer.hpp` — added `DensificationConfig densification` and `bool no_densify` to `TrainConfig`; added densification stats to `IterationStats`; added `DensificationController` member to `Trainer`
+- [x] `src/training/trainer.cpp` — integrated densification hooks into `train_step()`:
+  - Accumulate gradients every iteration after backward pass
+  - Run densify on schedule; rebuild `GaussianAdam` when model size changes (Adam moments invalid)
+  - Run opacity reset on schedule; log densification events
+- [x] `apps/train_main.cpp` — added CLI flags: `--densify-from`, `--densify-until`, `--densify-every`, `--grad-threshold`, `--no-densify`
+- [x] CMake: added `densification.cpp` to `cugs_training`, added `test_densification` test target
 - [ ] Tune thresholds for 6GB VRAM:
   - May need lower `max_gaussians` cap
   - More aggressive pruning
   - Start densification earlier or stop earlier
+
+### Key Design Decisions
+
+1. **Optimizer reconstruction after densification**: destroy and rebuild `GaussianAdam` when N changes. Adam moments become invalid after tensor resize. Momentum rebuilds within ~100 iterations.
+2. **No custom CUDA kernels**: all densification logic uses libtorch tensor ops (`cat`, `index`, `norm`, `sigmoid`). Fast enough since densification runs only every 100 iterations.
+3. **Split removes originals via prune mask**: split appends 2 children, then the prune step removes the original. No complex index bookkeeping.
+4. **Gradient accumulation only for visible Gaussians**: `radii > 0` mask prevents invisible Gaussians from accumulating zero gradients, which would dilute their average.
+5. **Lazy accumulator initialization**: `grad_accum_` created on first `accumulate_gradients()` call and re-created after densification. Handles N changes gracefully.
 
 ### MCMC Densification (Kheradmand et al.)
 
@@ -522,7 +542,17 @@ The original paper's densification strategy (every 100 iterations, starting at 5
 
 ### Tests
 
-- `tests/test_densification.cpp` — verify clone/split/prune on mock data, check parameter counts
+- [x] `tests/test_densification.cpp` — 10 tests:
+  - ShouldDensifyBoundaries: schedule start/end/frequency/exclusions
+  - ShouldResetOpacity: opacity reset schedule (3000, 6000, etc.)
+  - AccumulatesGradients: gradient accumulation doesn't crash, densify runs
+  - InvisibleGaussiansNotAccumulated: zero-radius Gaussians produce no clones/splits
+  - HighGradSmallScaleGetsCloned: clone path triggers, N increases, model valid
+  - HighGradLargeScaleGetsSplit: split path triggers, model valid
+  - LowOpacityGetsPruned: 5 low-opacity removed, 5 high-opacity kept
+  - OpacityResetSetsLowValue: all opacities set to -4.595
+  - ModelRemainsValidAfterFullCycle: mixed clone/split/prune, model.is_valid()
+  - MaxGaussiansRespected: hard cap enforced during densification
 
 ### Definition of Done
 

@@ -39,6 +39,13 @@ void print_usage(const char* program) {
         << "  --lambda <0-1>            SSIM loss weight (default: 0.2)\n"
         << "  --random-bg               Use random background color each iteration\n"
         << "  --seed <N>                Random seed (default: 42)\n"
+        << "\n"
+        << "Densification:\n"
+        << "  --densify-from <N>        Start densification at step N (default: 500)\n"
+        << "  --densify-until <N>       Stop densification at step N (default: 15000)\n"
+        << "  --densify-every <N>       Densify every N steps (default: 100)\n"
+        << "  --grad-threshold <F>      Position gradient threshold (default: 0.0002)\n"
+        << "  --no-densify              Disable densification entirely\n"
         << "  -h, --help                Show this help message\n";
 }
 
@@ -82,6 +89,16 @@ int main(int argc, char* argv[]) {
             config.random_background = true;
         } else if (arg_matches(argv[i], nullptr, "--seed") && i + 1 < argc) {
             config.seed = static_cast<uint64_t>(std::atoll(argv[++i]));
+        } else if (arg_matches(argv[i], nullptr, "--densify-from") && i + 1 < argc) {
+            config.densification.densify_from = std::atoi(argv[++i]);
+        } else if (arg_matches(argv[i], nullptr, "--densify-until") && i + 1 < argc) {
+            config.densification.densify_until = std::atoi(argv[++i]);
+        } else if (arg_matches(argv[i], nullptr, "--densify-every") && i + 1 < argc) {
+            config.densification.densify_every = std::atoi(argv[++i]);
+        } else if (arg_matches(argv[i], nullptr, "--grad-threshold") && i + 1 < argc) {
+            config.densification.grad_threshold = static_cast<float>(std::atof(argv[++i]));
+        } else if (arg_matches(argv[i], nullptr, "--no-densify")) {
+            config.no_densify = true;
         } else {
             spdlog::error("Unknown argument: {}", argv[i]);
             print_usage(argv[0]);

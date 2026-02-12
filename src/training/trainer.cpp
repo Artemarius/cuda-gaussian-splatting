@@ -84,6 +84,20 @@ Trainer::Trainer(const TrainConfig& config)
     // Create optimizer.
     optimizer_ = std::make_unique<GaussianAdam>(model_, config_.adam);
 
+    // Create densification controller.
+    if (!config_.no_densify) {
+        config_.densification.max_gaussians = config_.max_gaussians;
+        densify_ctrl_ = std::make_unique<DensificationController>(
+            config_.densification, dataset_.scene_bounds().extent);
+        spdlog::info("Densification: from={} until={} every={} grad_thresh={:.1e}",
+                     config_.densification.densify_from,
+                     config_.densification.densify_until,
+                     config_.densification.densify_every,
+                     config_.densification.grad_threshold);
+    } else {
+        spdlog::info("Densification: disabled");
+    }
+
     // Create output directory.
     std::filesystem::create_directories(config_.output_path);
 
@@ -191,8 +205,45 @@ IterationStats Trainer::train_step(int step) {
     optimizer_->apply_gradients(grads);
     optimizer_->step();
 
-    // 9. Collect stats.
+    // 9. Adaptive density control.
     IterationStats stats;
+    if (densify_ctrl_) {
+        // Accumulate gradients every iteration.
+        densify_ctrl_->accumulate_gradients(
+            grads.dL_dpositions, render_out.radii);
+
+        // Densify on schedule.
+        if (densify_ctrl_->should_densify(step)) {
+            auto dstats = densify_ctrl_->densify(model_, step);
+            stats.densified = true;
+            stats.num_cloned = dstats.num_cloned;
+            stats.num_split  = dstats.num_split;
+            stats.num_pruned = dstats.num_pruned;
+
+            if (dstats.num_cloned > 0 || dstats.num_split > 0 ||
+                dstats.num_pruned > 0) {
+                // Model changed size — rebuild optimizer (Adam moments invalid).
+                optimizer_ = std::make_unique<GaussianAdam>(
+                    model_, config_.adam);
+                optimizer_->update_lr(step);
+
+                spdlog::info(
+                    "[densify {:>5}] cloned={} split={} pruned={} "
+                    "{} -> {} Gaussians{}",
+                    step, dstats.num_cloned, dstats.num_split,
+                    dstats.num_pruned, dstats.num_before, dstats.num_after,
+                    dstats.skipped_vram ? " (VRAM-limited)" : "");
+            }
+        }
+
+        // Opacity reset on schedule.
+        if (densify_ctrl_->should_reset_opacity(step)) {
+            densify_ctrl_->reset_opacity(model_);
+            spdlog::info("[opacity reset {:>5}]", step);
+        }
+    }
+
+    // 10. Collect stats.
     stats.iteration = step;
     stats.loss = loss_val.item<float>();
     stats.l1 = l1_val;

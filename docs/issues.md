@@ -183,3 +183,41 @@ This is consistent with how the reference Python implementation handles resoluti
 **Lesson**: Never assume COLMAP's recorded image dimensions match the actual files on disk. Datasets distributed online often have images at different resolutions than the original COLMAP reconstruction. Always reconcile at load time.
 
 **File**: `src/training/trainer.cpp`, `Trainer::train_step()`
+
+---
+
+## Phase 7: Adaptive Density Control
+
+### Issue 10: `constexpr` with `std::log` on MSVC
+
+**Symptom**: `src/optimizer/densification.cpp` failed to compile with MSVC error C3615 — `constexpr function 'inverse_sigmoid' cannot result in a constant expression`.
+
+**Root cause**: MSVC's `<cmath>` does not mark `std::log` as `constexpr`. Some GCC/Clang extensions do, but this is not guaranteed by the standard (prior to C++26).
+
+**Fix**: Changed the `inverse_sigmoid` helper from `constexpr` to `inline`. The pre-computed constant `kResetOpacity` was already a literal, so it remains `constexpr`.
+
+**Lesson**: Avoid `constexpr` on functions calling `<cmath>` routines when targeting MSVC. Use `inline` and pre-compute literal constants where compile-time evaluation is needed.
+
+**File**: `src/optimizer/densification.cpp`
+
+---
+
+### Issue 11: libtorch `Tensor::max(dim)` returns `std::tuple`, not a struct with `.values`
+
+**Symptom**: `src/optimizer/densification.cpp` failed to compile with MSVC error C2039 — `'values' is not a member of 'std::tuple<at::Tensor,at::Tensor>'`.
+
+**Root cause**: In PyTorch's Python API, `tensor.max(dim)` returns a named tuple with `.values` and `.indices` attributes. In the libtorch C++ API, `Tensor::max(int64_t dim)` returns a plain `std::tuple<Tensor, Tensor>`. The `.values` accessor does not exist.
+
+**Fix**: Use `std::get<0>(tensor.max(dim))` to extract the values tensor.
+
+```cpp
+// Python-style (doesn't work in C++):
+auto max_scale = torch::exp(model.scales).max(1).values;
+
+// Correct C++ libtorch:
+auto max_scale = std::get<0>(torch::exp(model.scales).max(1));
+```
+
+**Lesson**: libtorch's C++ API frequently returns `std::tuple` where PyTorch Python returns named tuples. Always use `std::get<N>()` for reduction operations like `max`, `min`, `sort`, `topk` that return multiple tensors.
+
+**File**: `src/optimizer/densification.cpp`

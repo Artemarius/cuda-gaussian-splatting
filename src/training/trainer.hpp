@@ -9,6 +9,7 @@
 #include "core/gaussian.hpp"
 #include "data/dataset.hpp"
 #include "optimizer/adam.hpp"
+#include "optimizer/densification.hpp"
 #include "training/lr_schedule.hpp"
 
 #include <torch/torch.h>
@@ -58,6 +59,10 @@ struct TrainConfig {
 
     // Optimizer
     AdamConfig adam;
+
+    // Densification
+    DensificationConfig densification;
+    bool no_densify = false;  ///< Disable densification entirely
 };
 
 /// @brief Statistics for a single training iteration.
@@ -69,6 +74,12 @@ struct IterationStats {
     int num_gaussians   = 0;
     int active_sh_degree = 0;
     float position_lr   = 0.0f;
+
+    // Densification stats (zero when densification didn't run).
+    int num_cloned  = 0;
+    int num_split   = 0;
+    int num_pruned  = 0;
+    bool densified  = false;
 };
 
 /// @brief Main training loop for 3D Gaussian Splatting.
@@ -111,6 +122,7 @@ private:
     Dataset dataset_;
     GaussianModel model_;
     std::unique_ptr<GaussianAdam> optimizer_;
+    std::unique_ptr<DensificationController> densify_ctrl_;
     std::mt19937 rng_;
 };
 

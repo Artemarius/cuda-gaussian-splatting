@@ -118,6 +118,7 @@ target_link_libraries(cugs_rasterizer PUBLIC cugs_utils cugs_data)
 add_library(cugs_training
     src/training/loss.cpp
     src/optimizer/adam.cpp
+    src/optimizer/densification.cpp
     src/training/trainer.cpp
 )
 

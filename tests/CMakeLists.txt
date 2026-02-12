@@ -84,6 +84,13 @@ target_link_libraries(test_training PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_densification test_densification.cpp)
+
+target_link_libraries(test_densification PRIVATE
+    cugs_training
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(test_training DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_backward DISCOVERY_MODE PRE_TEST)
@@ -97,3 +104,4 @@ gtest_discover_tests(test_sh DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_gaussian_init DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_projection DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_rasterizer DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(test_densification DISCOVERY_MODE PRE_TEST)
