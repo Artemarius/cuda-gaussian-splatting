@@ -112,3 +112,52 @@ Also improved `make_test_gaussians()` to produce better-conditioned test cases:
 **Lesson**: Finite-difference gradient verification requires mixed (relative + absolute) tolerance. Pure relative tolerance breaks down for near-zero gradients. The denominator `max(|analytic|, |numerical|, floor)` with `floor=1e-6` is insufficient when gradients are 1e-5.
 
 **File**: `tests/test_backward.cpp`, `finite_diff_check()`
+
+---
+
+## Phase 6: Basic Training Loop
+
+### Issue 6: Ambiguous `l1_loss` due to ADL with libtorch
+
+**Symptom**: `src/training/trainer.cpp` failed to compile with MSVC error C2668 — ambiguous call to `l1_loss`.
+
+**Root cause**: Inside `namespace cugs`, the call `l1_loss(render_out.color, target)` was ambiguous because the `torch::Tensor` argument triggers argument-dependent lookup (ADL) into the `at` namespace, finding `at::l1_loss`. Both `cugs::l1_loss` (our custom function) and `at::l1_loss` (libtorch's built-in) are viable overloads.
+
+**Fix**: Fully qualify the call as `cugs::l1_loss(...)`.
+
+**Lesson**: When defining functions that share names with libtorch's `at::` namespace functions, always use qualified calls. This is easy to miss because the ambiguity only surfaces when the function arguments include torch types.
+
+**File**: `src/training/trainer.cpp`
+
+---
+
+### Issue 7: `torch::cuda::getDeviceProperties` unavailable in libtorch C++ API
+
+**Symptom**: `apps/train_main.cpp` failed to compile — `getDeviceProperties` is not a member of `torch::cuda`.
+
+**Root cause**: The libtorch C++ distribution (2.5.x) does not expose `torch::cuda::getDeviceProperties()` in its public headers, even though the Python API has `torch.cuda.get_device_properties()`.
+
+**Fix**: Use the CUDA runtime API directly via `cudaGetDeviceProperties(&prop, 0)` from `<cuda_runtime.h>`.
+
+**Lesson**: The libtorch C++ API surface is smaller than PyTorch's Python API. For CUDA device queries, use the CUDA runtime directly rather than assuming libtorch wrappers exist.
+
+**File**: `apps/train_main.cpp`
+
+---
+
+### Issue 8: Convergence test too optimistic for random target
+
+**Symptom**: `TrainingTest.SyntheticConvergence` failed — loss decreased by only ~1.2% after 100 iterations, below the 10% threshold.
+
+**Root cause**: The initial test design used a random target image for 20 small Gaussians to match. This is an underdetermined problem — 20 Gaussians with degree-0 SH have only ~20*3=60 effective color parameters to match a 64x48x3=9216 pixel image. Adam's momentum warm-up further slows early convergence.
+
+**Fix**: Changed the test to a well-conditioned recovery problem:
+1. Render a target from the model's original SH coefficients
+2. Perturb SH coefficients by adding N(0, 1.0) noise
+3. Optimize to recover — this is well-conditioned because the target is exactly achievable and SH gradients are direct (linear relationship to rendered color)
+
+With high SH learning rate (5e-2) and 100 iterations, the loss now decreases well beyond 10%.
+
+**Lesson**: Convergence tests should use achievable targets. Testing "can the optimizer reduce loss on a random target" is less informative than "can the optimizer recover from a known perturbation". The latter isolates the gradient/optimizer correctness from the model's representational capacity.
+
+**File**: `tests/test_training.cpp`

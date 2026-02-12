@@ -117,9 +117,11 @@ target_link_libraries(cugs_rasterizer PUBLIC cugs_utils cugs_data)
 # -----------------------------------------------------------------------------
 add_library(cugs_training
     src/training/loss.cpp
+    src/optimizer/adam.cpp
+    src/training/trainer.cpp
 )
 
-target_link_libraries(cugs_training PUBLIC cugs_utils)
+target_link_libraries(cugs_training PUBLIC cugs_utils cugs_data cugs_rasterizer)
 
 # -----------------------------------------------------------------------------
 # Put all executables in the build root so they can find DLLs.

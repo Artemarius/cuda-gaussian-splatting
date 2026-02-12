@@ -412,40 +412,46 @@ Training loop: for each iteration, randomly sample a training image, render from
 
 ### Tasks
 
-- [ ] `src/training/lr_schedule.hpp` — learning rate schedules
-  - Position: exponential decay from 1.6e-4 to 1.6e-6 (paper values)
+- [x] `src/training/lr_schedule.hpp` — learning rate schedules (header-only)
+  - Position: exponential decay from 1.6e-4 to 1.6e-6 (log-linear interpolation)
   - SH: constant 2.5e-3, higher bands start at iteration 1000 (progressive activation)
   - Opacity: constant 0.05
   - Scale: constant 5e-3
   - Rotation: constant 1e-3
-  - Implement as a simple function: `float get_lr(param_type, iteration)`
-- [ ] `src/optimizer/adam.hpp/.cpp` — initial Adam optimizer using libtorch
-  - Use `torch::optim::Adam` for first implementation (correct but slow)
-  - Per-parameter-group learning rates
+  - `ParamGroup` enum, `PositionLRConfig` struct, `position_lr()`, `active_sh_degree_for_step()`
+- [x] `src/optimizer/adam.hpp/.cpp` — Adam optimizer using libtorch
+  - `GaussianAdam` wraps `torch::optim::Adam` with 5 parameter groups
+  - `apply_gradients(BackwardOutput)` bridges custom CUDA backward → libtorch optimizer
+  - `update_lr(step)` applies exponential decay schedule to position group
+  - Per-group learning rates with paper-default eps=1e-15
   - This gets replaced by fused CUDA Adam in Phase 8, but we need a working baseline first
-- [ ] `src/training/trainer.hpp/.cpp` — main training loop
-  - Iteration: sample image → render → loss → backward → optimizer step
-  - Log loss every N iterations (spdlog)
-  - Save checkpoint every N iterations (PLY + optimizer state)
-  - Print VRAM usage periodically
-  - CLI args: dataset path, output path, num iterations, eval flag
-- [ ] `apps/train_main.cpp` — entry point
-  - Parse CLI arguments
-  - Set up dataset, model, optimizer, trainer
-  - Run training loop
-- [ ] **Progressive SH**: start with degree 0 (DC only), increase to 1 at iteration 1000, to 2 at 2000, to 3 at 3000
+- [x] `src/training/trainer.hpp/.cpp` — main training loop
+  - `image_to_tensor()` converts CPU Image → CUDA tensor, handles RGBA→RGB
+  - `Trainer` class: loads Dataset, initializes Gaussians, creates optimizer
+  - `train_step()`: sample image → render → autograd dL/dcolor → custom backward → inject gradients → Adam step
+  - Periodic logging (loss, L1, SSIM, num_gaussians, SH degree, position LR, it/s)
+  - VRAM monitoring via `cudaMemGetInfo`
+  - Checkpoint saving as PLY files
+  - `max_gaussians` cap for VRAM-constrained GPUs
+- [x] `apps/train_main.cpp` — CLI entry point
+  - Full argument parsing: -d/--data, -o/--output, -i/--iterations, -r/--resolution, --sh-degree, --max-gaussians, --save-every, --log-every, --lambda, --random-bg, --seed
+  - CUDA validation, config validation
+- [x] **Progressive SH**: `active_sh_degree_for_step(step, max_degree)` — degree 0 at start, increases every 1000 iterations up to max_degree
+- [x] CMake: `cugs_training` now links `cugs_data` and `cugs_rasterizer`; `train` executable and `test_training` test added
 
-### First Training Run
+### Key Design Decisions
 
-- Train on Truck scene (smaller than Garden)
-- Start with just 1000 iterations and monitor loss curve
-- Expect: loss should decrease noticeably within the first few hundred iterations
-- If loss plateaus immediately: likely gradient bug. Go back to Phase 5 validation.
-- If loss diverges: likely learning rate too high or numerical instability in projection
+1. **Hybrid gradient flow**: render() (custom CUDA) → autograd dL/dcolor (libtorch) → render_backward() (custom CUDA) → inject .grad() → Adam step (libtorch). This avoids reimplementing Adam while keeping rasterizer performance.
+2. **No SH coefficient masking**: progressive SH controls `active_sh_degree` in RenderSettings but doesn't zero out higher-degree coefficients. The forward rasterizer already respects the active degree.
+3. **Lazy image loading**: Dataset loads images on-demand each iteration to minimize peak memory.
 
 ### Tests
 
-- `tests/test_training.cpp` — run 100 iterations on a tiny synthetic scene, verify loss decreases
+- [x] `tests/test_training.cpp` — 12 tests:
+  - LR schedule: initial/final/beyond/monotonic/midpoint, active SH degree clamping
+  - Image-to-tensor: RGB and RGBA conversion, pixel value verification
+  - Adam: per-group LRs, position LR decay over training
+  - Convergence: 20 Gaussians, perturb SH, 100 Adam iterations → loss decreases >10%
 
 ### Definition of Done
 
