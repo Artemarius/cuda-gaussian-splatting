@@ -12,6 +12,8 @@
 #include "rasterizer/projection.hpp"
 #include "rasterizer/sorting.hpp"
 #include "rasterizer/forward.hpp"
+#include "rasterizer/backward.hpp"
+#include "rasterizer/projection_backward.hpp"
 
 #include <spdlog/spdlog.h>
 
@@ -107,6 +109,77 @@ RenderOutput render(
         /*opacities_act=*/     proj.opacities_act,
         /*gaussian_indices=*/  sort.gaussian_values_sorted,
         /*tile_ranges=*/       sort.tile_ranges,
+    };
+}
+
+BackwardOutput render_backward(
+    const torch::Tensor& dL_dcolor,
+    const RenderOutput& render_out,
+    const GaussianModel& model,
+    const CameraInfo& camera,
+    const RenderSettings& settings)
+{
+    TORCH_CHECK(dL_dcolor.is_cuda(), "dL_dcolor must be on CUDA device");
+    TORCH_CHECK(dL_dcolor.dim() == 3 && dL_dcolor.size(2) == 3,
+                "dL_dcolor must be [H, W, 3]");
+
+    const int n = static_cast<int>(model.num_gaussians());
+    auto device = dL_dcolor.device();
+    auto opts_f = torch::TensorOptions().dtype(torch::kFloat32).device(device);
+
+    if (n == 0) {
+        return BackwardOutput{
+            torch::zeros({0, 3}, opts_f),
+            torch::zeros({0, 4}, opts_f),
+            torch::zeros({0, 3}, opts_f),
+            torch::zeros({0, 1}, opts_f),
+            torch::zeros_like(model.sh_coeffs),
+        };
+    }
+
+    int active_degree = std::min(settings.active_sh_degree, model.max_sh_degree());
+
+    // -----------------------------------------------------------------------
+    // Stage 1: Rasterize backward (pixel gradients → per-Gaussian 2D grads)
+    // -----------------------------------------------------------------------
+    auto rast_bwd = rasterize_backward(
+        dL_dcolor,
+        render_out.means_2d,
+        render_out.cov_2d_inv,
+        render_out.rgb,
+        render_out.opacities_act,
+        render_out.tile_ranges,
+        render_out.gaussian_indices,
+        render_out.final_T,
+        render_out.n_contrib,
+        camera.width, camera.height,
+        settings.background,
+        n);
+
+    // -----------------------------------------------------------------------
+    // Stage 2: Projection backward (2D grads → 3D parameter grads)
+    // -----------------------------------------------------------------------
+    auto proj_bwd = project_backward(
+        rast_bwd.dL_dmeans_2d,
+        rast_bwd.dL_dcov_2d_inv,
+        rast_bwd.dL_drgb,
+        rast_bwd.dL_dopacity_act,
+        model.positions,
+        model.rotations,
+        model.scales,
+        model.opacities,
+        model.sh_coeffs,
+        render_out.radii,
+        camera,
+        active_degree,
+        settings.scale_modifier);
+
+    return BackwardOutput{
+        proj_bwd.dL_dpositions,
+        proj_bwd.dL_drotations,
+        proj_bwd.dL_dscales,
+        proj_bwd.dL_dopacities,
+        proj_bwd.dL_dsh_coeffs,
     };
 }
 

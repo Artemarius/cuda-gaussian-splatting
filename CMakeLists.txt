@@ -62,6 +62,7 @@ find_path(STB_INCLUDE_DIR stb_image.h PATH_SUFFIXES stb)
 add_library(cugs_utils
     src/utils/cuda_info.cu
     src/core/sh.cu
+    src/core/sh_backward.cu
 )
 
 target_include_directories(cugs_utils PUBLIC
@@ -104,6 +105,8 @@ add_library(cugs_rasterizer
     src/rasterizer/projection.cu
     src/rasterizer/sorting.cu
     src/rasterizer/forward.cu
+    src/rasterizer/backward.cu
+    src/rasterizer/projection_backward.cu
     src/rasterizer/rasterizer.cpp
 )
 

@@ -63,6 +63,11 @@ cmake --build build -- -j$(nproc)
 3. **Performance** — once correct, optimize CUDA kernels and benchmark against the reference implementation
 4. **Documentation** — every non-trivial algorithm should reference the relevant paper/equation
 
+## Project Documentation
+
+- **`ROADMAP.md`** — phase-by-phase implementation plan with task checklists and design notes. Update after completing each phase.
+- **`docs/issues.md`** — log of issues encountered during development, root causes, and solutions. Add new entries when debugging non-trivial problems, especially gradient bugs or CUDA pitfalls.
+
 ## Key References
 
 - Kerbl et al., "3D Gaussian Splatting for Real-Time Radiance Field Rendering" (SIGGRAPH 2023)

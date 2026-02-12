@@ -330,46 +330,75 @@ Loss computation works and matches expected values on test cases.
 
 This is the second-hardest part after the forward pass. The backward pass traverses the same tile structure in reverse, computing gradients via the chain rule. For each pixel, gradients flow from `dL/dColor` back to each contributing Gaussian's parameters.
 
+### Data Flow
+
+```
+loss.backward()  -->  dL/dColor [H, W, 3]
+       |
+  k_rasterize_backward  (per-tile, back-to-front compositing in reverse)
+       |
+       +--> dL/d(rgb) [N,3], dL/d(opacity_act) [N], dL/d(means_2d) [N,2], dL/d(cov_2d_inv) [N,3]
+       |
+  k_project_backward  (one thread per Gaussian, chain rule through projection)
+       |
+       +--> dL/d(positions) [N,3], dL/d(rotations) [N,4], dL/d(scales) [N,3], dL/d(opacities) [N,1]
+       |
+  k_evaluate_sh_backward  (one thread per Gaussian, linear in coefficients)
+       |
+       +--> dL/d(sh_coeffs) [N,3,C]
+```
+
 ### Tasks
 
-- [ ] `src/rasterizer/backward.cuh/.cu`
-  - `k_rasterize_backward` kernel:
-    - Same tile structure as forward, but traverse Gaussians back-to-front
-    - For each pixel, starting from the last contributing Gaussian:
-      - Receive `dL/d(pixel_color)` from loss
-      - Compute `dL/d(gaussian_color)`, `dL/d(gaussian_opacity)`, `dL/d(gaussian_2d_mean)`, `dL/d(gaussian_2d_cov)`
-      - Accumulate transmittance in reverse
-    - Atomic add to accumulate gradients across pixels (multiple pixels contribute to each Gaussian)
-  - `k_project_backward` kernel:
-    - Backpropagate from 2D parameters to 3D parameters
-    - `dL/d(position_3d)` from `dL/d(mean_2d)` via projection Jacobian
-    - `dL/d(quaternion)` and `dL/d(scale)` from `dL/d(covariance_2d)` via the chain of covariance computation
-    - `dL/d(sh_coefficients)` from `dL/d(color)` via SH evaluation Jacobian
-    - `dL/d(opacity_logit)` from `dL/d(opacity)` via sigmoid derivative
-  - All gradients are analytic — no autograd, no finite differences in the CUDA kernels
+- [x] `src/core/sh_backward.hpp/.cu` — SH backward kernel
+  - One thread per Gaussian, computes `dL/d(c_k) = dL/d(color) * Y_k(dir) * gate`
+  - ReLU gate: zero gradient when forward SH output was clamped to 0
+- [x] `src/rasterizer/backward.cuh` — five `__device__` helper functions:
+  1. `compute_dL_dcov2d_from_dL_dcov2d_inv` — matrix inverse derivative for symmetric 2×2
+  2. `compute_dL_dcov3d` — propagates via `T^T @ dL @ T`
+  3. `compute_dL_dM` — propagates via `2 * dΣ_full @ M`
+  4. `compute_dL_dquat` — explicit quaternion-rotation Jacobian with normalization
+  5. `compute_dL_dt_cam_from_cov` — gradient through Jacobian J's t_cam dependence
+- [x] `src/rasterizer/backward.hpp/.cu` — rasterize backward kernel
+  - `k_rasterize_backward`: same tile grid as forward, back-to-front traversal
+  - Reconstructs transmittance via `T /= max(1 - alpha, 1e-5)` going backwards
+  - Uses `S_after` accumulator for tracking contributions after current Gaussian
+  - Scatters gradients to per-Gaussian accumulators via `atomicAdd`
+- [x] `src/rasterizer/projection_backward.hpp/.cu` — projection backward kernel
+  - `k_project_backward`: one thread per Gaussian, recomputes all forward intermediates
+  - Chains: `dL/d(cov2d_inv) → cov2d → cov3d → M → R/scale → quat/log_scale`
+  - Position gradient through both means_2d path and covariance J-dependence path
+  - Sigmoid derivative for `opacity_act → logit` chain
+  - Host launcher calls `evaluate_sh_backward_cuda()` for SH gradients
+- [x] `src/rasterizer/rasterizer.hpp/.cpp` — added `BackwardOutput` struct and `render_backward()` API
+- [x] CMake: added `backward.cu`, `projection_backward.cu` to `cugs_rasterizer`; `sh_backward.cu` to `cugs_utils`
 
-### Validation Strategy
+### Key Design Decisions
 
-- [ ] **Gradient checking**: for a small number of Gaussians, compare analytic gradients to finite difference approximation
-  - Perturb each parameter by ε, re-render, compute `(L(θ+ε) - L(θ-ε)) / (2ε)`
-  - Compare to analytic gradient — relative error should be < 1e-3 for float32
-  - This is slow but essential for correctness
-- [ ] **Convergence test**: optimize a single Gaussian to match a simple target (e.g., colored circle) — verify loss decreases monotonically with gradient descent
+1. **Transmittance recomputation** (not storage): back-to-front reconstruction from `final_T` by dividing out `(1-alpha)`, clamped to `max(1-alpha, 1e-5)` for stability
+2. **Recomputation in projection backward**: recompute all intermediates per-Gaussian rather than storing them — saves ~176 bytes/Gaussian (significant at 1M Gaussians on 6GB VRAM)
+3. **No SH direction-through-position gradients**: direction treated as constant in backward (matches reference impl)
+4. **Direct `atomicAdd(float*)`**: hardware-accelerated on sm_86, no warp-level reduction (defer to Phase 12)
+5. **Clamp handling**: zero gradient when forward alpha was clamped to 0.99, below 1/255 (skipped), or SH was negative (clamped to 0)
 
-### Math Reference
+### Issues Encountered
 
-Key gradient derivations (all in Kerbl et al., Appendix):
-- dL/dΣ' (2D covariance gradient) → dL/dΣ (3D) → dL/dR, dL/dS
-- dL/dμ' (2D mean gradient) → dL/dμ (3D position)
-- Quaternion gradients require the derivative of R(q) w.r.t. q components
+See `docs/issues.md` for detailed descriptions and solutions. Key issues:
+- Symmetric 2×2 matrix off-diagonal gradient convention (combined vs single-entry format)
+- Backward contributor count logic (tracking actual vs all Gaussians in range)
+- Tile boundary discontinuities in position gradient finite-difference tests
 
 ### Tests
 
-- `tests/test_backward.cpp` — finite difference gradient check for each parameter type
+- [x] `tests/test_backward.cpp` — 9 tests:
+  - OutputShapes, NoNanInf, CulledGaussiansZeroGrad — structural correctness
+  - SingleGaussianConvergence — GD step reduces loss
+  - FiniteDiff{Positions, Scales, Rotations, Opacities, SHCoeffs} — analytic vs numerical gradients
+  - Uses mixed tolerance (absolute + relative) for robust finite-difference verification
 
 ### Definition of Done
 
-Analytic gradients match finite differences to reasonable precision. A simple optimization test converges.
+Analytic gradients match finite differences to reasonable precision. A simple optimization test converges. All 9 tests pass.
 
 ---
 

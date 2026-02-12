@@ -59,4 +59,36 @@ RenderOutput render(
     const CameraInfo& camera,
     const RenderSettings& settings);
 
+/// @brief Output of the backward pass through the full render pipeline.
+///
+/// Contains gradients w.r.t. all learnable Gaussian parameters.
+struct BackwardOutput {
+    torch::Tensor dL_dpositions;  ///< dL/d(positions) [N, 3], float32
+    torch::Tensor dL_drotations;  ///< dL/d(rotations) [N, 4], float32
+    torch::Tensor dL_dscales;     ///< dL/d(scales) [N, 3], float32 (log-space)
+    torch::Tensor dL_dopacities;  ///< dL/d(opacities) [N, 1], float32 (logit-space)
+    torch::Tensor dL_dsh_coeffs;  ///< dL/d(sh_coeffs) [N, 3, C], float32
+};
+
+/// @brief Backward pass through the full render pipeline.
+///
+/// Given the gradient of the loss w.r.t. the rendered image (dL/dcolor),
+/// computes gradients w.r.t. all learnable Gaussian parameters by chaining:
+///   rasterize_backward (pixel → per-Gaussian 2D gradients)
+///   → project_backward (per-Gaussian 2D → 3D parameter gradients)
+///
+/// @param dL_dcolor Gradient of loss w.r.t. rendered image [H, W, 3].
+/// @param render_out The RenderOutput from the forward pass (contains all
+///                   intermediates needed for gradient computation).
+/// @param model     The GaussianModel used in the forward pass.
+/// @param camera    Camera parameters used in the forward pass.
+/// @param settings  Render settings used in the forward pass.
+/// @return BackwardOutput with gradients for all learnable parameters.
+BackwardOutput render_backward(
+    const torch::Tensor& dL_dcolor,
+    const RenderOutput& render_out,
+    const GaussianModel& model,
+    const CameraInfo& camera,
+    const RenderSettings& settings);
+
 } // namespace cugs

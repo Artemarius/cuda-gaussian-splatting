@@ -69,7 +69,16 @@ target_link_libraries(test_loss PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_backward test_backward.cpp)
+
+target_link_libraries(test_backward PRIVATE
+    cugs_rasterizer
+    cugs_training
+    GTest::gtest_main
+)
+
 include(GoogleTest)
+gtest_discover_tests(test_backward DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_loss DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_cuda_utils DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_colmap_loader DISCOVERY_MODE PRE_TEST)
