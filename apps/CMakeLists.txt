@@ -6,3 +6,6 @@ target_link_libraries(dump_points PRIVATE cugs_data)
 
 add_executable(train train_main.cpp)
 target_link_libraries(train PRIVATE cugs_training)
+
+add_executable(eval eval_main.cpp)
+target_link_libraries(eval PRIVATE cugs_training)

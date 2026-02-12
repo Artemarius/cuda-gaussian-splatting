@@ -623,18 +623,34 @@ Fused Adam produces identical training results with measurable speedup.
 
 ### Tasks
 
-- [ ] `src/training/metrics.hpp/.cpp`
-  - PSNR: `10 * log10(1.0 / MSE)` — trivial
-  - SSIM: reuse from loss computation
-  - LPIPS: optional, requires a pretrained VGG — may skip or implement later via libtorch model loading
-- [ ] Evaluation script in `apps/eval_main.cpp`:
-  - Load trained model
-  - Render all test views
-  - Compute per-image and mean metrics
-  - Output results as JSON
+- [x] `src/training/metrics.hpp/.cpp`
+  - PSNR: `10 * log10(1.0 / MSE)`, clamped to 100 dB for identical images
+  - SSIM: reuses `cugs::ssim()` from `loss.hpp`, returns `.mean().item<float>()`
+  - LPIPS: skipped — requires pretrained VGG network, adds complexity. PSNR + SSIM are the primary metrics in the paper's comparisons.
+  - `EvalResults` struct with `to_json()` / `save_json()` using nlohmann/json
+  - `evaluate()` function: iterates test cameras, renders with `NoGradGuard`, computes per-image and mean metrics
+- [x] Evaluation CLI in `apps/eval_main.cpp`:
+  - Load trained model via `GaussianModel::load_ply()`
+  - Load dataset, configure `RenderSettings` (SH degree from model or CLI, background color)
+  - Render all test views, compute PSNR/SSIM per image
+  - Print summary table to console
+  - Save results as JSON
+  - CLI: `-m/--model`, `-d/--data`, `-o/--output`, `-r/--resolution`, `--sh-degree`, `--background`
+- [x] `tests/test_metrics.cpp` — 8 tests:
+  - PSNRIdentical, PSNRKnownDifference, PSNRSymmetric, PSNRRange
+  - SSIMIdentical, SSIMDifferent, SSIMSymmetric
+  - EvalResultsJsonRoundtrip
+- [x] CMake: added `metrics.cpp` to `cugs_training`, `eval` executable, `test_metrics` test target
 - [ ] Run on Truck and/or Train datasets, compare to paper Table 1:
   - Truck: PSNR ~25.2, SSIM ~0.88 (Mip-NeRF 360 dataset)
   - Don't expect exact match on 6GB GPU if Gaussian count is limited
+
+### Key Design Decisions
+
+1. **No LPIPS**: requires a pretrained VGG network and libtorch model loading, which adds complexity. PSNR + SSIM are sufficient for initial comparisons against the paper.
+2. **Reuses existing SSIM**: `compute_ssim()` wraps `cugs::ssim()` from `loss.hpp` — no code duplication.
+3. **Same image resize pattern as trainer**: handles COLMAP camera/image resolution mismatch.
+4. **NoGradGuard**: all evaluation runs without autograd for speed and memory efficiency.
 
 ### Definition of Done
 
