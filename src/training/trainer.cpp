@@ -146,6 +146,14 @@ IterationStats Trainer::train_step(int step) {
     size_t img_idx = dist(rng_);
     const auto& camera = dataset_.train_cameras()[img_idx];
     Image cpu_image = dataset_.load_train_image(img_idx);
+
+    // Resize if the loaded image doesn't match camera dimensions (can happen
+    // when COLMAP cameras.bin records the original capture resolution but the
+    // image files on disk are already downscaled).
+    if (cpu_image.width != camera.width || cpu_image.height != camera.height) {
+        cpu_image = resize_image(cpu_image, camera.width, camera.height);
+    }
+
     auto target = image_to_tensor(cpu_image, torch::kCUDA);
 
     // 4. Render settings.

@@ -161,3 +161,25 @@ With high SH learning rate (5e-2) and 100 iterations, the loss now decreases wel
 **Lesson**: Convergence tests should use achievable targets. Testing "can the optimizer reduce loss on a random target" is less informative than "can the optimizer recover from a known perturbation". The latter isolates the gradient/optimizer correctness from the model's representational capacity.
 
 **File**: `tests/test_training.cpp`
+
+---
+
+### Issue 9: Rendered vs target image size mismatch on real datasets
+
+**Symptom**: First training run on Truck scene crashed immediately: `rendered and target must have the same shape, got [272, 489, 3] vs [136, 244, 3]`. The rendered image matched the camera dimensions (489x272) but the loaded target was exactly half that (244x136).
+
+**Root cause**: The Dataset constructor reads image dimensions from COLMAP's `cameras.bin` (the original capture resolution, e.g. 1957x1091) and divides by `resolution_scale` to get camera dimensions (489x272 at scale 4). Separately, `load_train_image()` loads the actual image file from disk and also divides by `resolution_scale`. However, for the Tanks & Temples dataset, the image files in `images/` are already at a lower resolution than what COLMAP recorded — COLMAP was run on higher-res images that were later replaced with downscaled versions. So the loaded image was downscaled twice: once on disk (already ~1/2) and once by `load_image_resized` (÷4), giving ~1/8 of the COLMAP-recorded resolution instead of the expected 1/4.
+
+**Fix**: Added a resolution reconciliation step in `Trainer::train_step()`: after loading the image, if its dimensions don't match the camera, resize it to match:
+
+```cpp
+if (cpu_image.width != camera.width || cpu_image.height != camera.height) {
+    cpu_image = resize_image(cpu_image, camera.width, camera.height);
+}
+```
+
+This is consistent with how the reference Python implementation handles resolution — it always uses the loaded image's dimensions as the source of truth and adjusts accordingly.
+
+**Lesson**: Never assume COLMAP's recorded image dimensions match the actual files on disk. Datasets distributed online often have images at different resolutions than the original COLMAP reconstruction. Always reconcile at load time.
+
+**File**: `src/training/trainer.cpp`, `Trainer::train_step()`

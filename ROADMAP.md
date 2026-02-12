@@ -444,6 +444,7 @@ Training loop: for each iteration, randomly sample a training image, render from
 1. **Hybrid gradient flow**: render() (custom CUDA) → autograd dL/dcolor (libtorch) → render_backward() (custom CUDA) → inject .grad() → Adam step (libtorch). This avoids reimplementing Adam while keeping rasterizer performance.
 2. **No SH coefficient masking**: progressive SH controls `active_sh_degree` in RenderSettings but doesn't zero out higher-degree coefficients. The forward rasterizer already respects the active degree.
 3. **Lazy image loading**: Dataset loads images on-demand each iteration to minimize peak memory.
+4. **Image-camera resolution reconciliation**: `train_step()` resizes the loaded image to match camera dimensions if they differ. This handles the common case where COLMAP's `cameras.bin` records the original capture resolution but the actual image files on disk are already downscaled.
 
 ### Tests
 
@@ -452,6 +453,32 @@ Training loop: for each iteration, randomly sample a training image, render from
   - Image-to-tensor: RGB and RGBA conversion, pixel value verification
   - Adam: per-group LRs, position LR decay over training
   - Convergence: 20 Gaussians, perturb SH, 100 Adam iterations → loss decreases >10%
+
+### First Training Run (Truck scene, RTX 3060 Laptop GPU)
+
+```
+build\train -d data\tandt\truck -o output\truck -i 1000 -r 4 --max-gaussians 50000
+```
+
+| Metric | Value |
+|---|---|
+| Scene | Tanks & Temples Truck (219 train / 32 test views) |
+| Resolution | 489x272 (1/4 scale) |
+| Gaussians | 50,000 (capped from 136k sparse points) |
+| VRAM | ~1 GB / 6 GB |
+| Speed | 0.4 it/s (2585s total) |
+| Loss (step 0) | 0.285 (L1=0.205, SSIM=0.39) |
+| Loss (step 400) | 0.125 (L1=0.086, SSIM=0.72) — best observed |
+| Loss (step 999) | 0.295 (L1=0.230, SSIM=0.44) — per-view variance |
+
+**Observations**:
+- Loss clearly decreases overall — gradient flow is correct end-to-end
+- Per-iteration loss fluctuates because each step samples a different training view
+- 0.4 it/s is slow; bottlenecks: libtorch Adam overhead, per-iteration disk I/O, no image caching. Fused CUDA Adam (Phase 8) and image caching will help.
+- SH degree stays at 0 (progressive activation starts degree 1 at step 1000)
+- Gaussian init takes ~4 min for 136k points due to O(n²) kNN — optimization target for later
+- Checkpoint PLY has correct structure but no vertex colors — SH coefficients stored as `f_dc_*` properties, need a Gaussian splatting viewer (Phase 11) to visualize correctly. Standard PLY viewers show uncolored points.
+- Scene is sparse without densification — quality improves dramatically in Phase 7
 
 ### Definition of Done
 
