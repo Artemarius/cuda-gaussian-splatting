@@ -120,7 +120,7 @@ TEST(DensificationTest, AccumulatesGradients) {
 
     // Simulate 5 gradient accumulation steps.
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::randn({n, 3}, opts) * 0.001f;
+        auto grads = torch::randn({n, 2}, opts) * 0.001f;
         auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
         ctrl.accumulate_gradients(grads, radii);
     }
@@ -148,7 +148,7 @@ TEST(DensificationTest, InvisibleGaussiansNotAccumulated) {
 
     // Give all Gaussians high position gradients, but zero radii (invisible).
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::ones({n, 3}, opts) * 10.0f; // Very high gradient.
+        auto grads = torch::ones({n, 2}, opts) * 10.0f; // Very high gradient.
         auto radii = torch::zeros({n}, opts.dtype(torch::kInt32)); // All invisible.
         ctrl.accumulate_gradients(grads, radii);
     }
@@ -184,7 +184,7 @@ TEST(DensificationTest, HighGradSmallScaleGetsCloned) {
 
     // Accumulate high gradients with all visible.
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::ones({n, 3}, opts) * 1.0f; // Norm ~1.73 >> threshold.
+        auto grads = torch::ones({n, 2}, opts) * 1.0f; // Norm ~1.41 >> threshold.
         auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
         ctrl.accumulate_gradients(grads, radii);
     }
@@ -217,7 +217,7 @@ TEST(DensificationTest, HighGradLargeScaleGetsSplit) {
 
     // Accumulate high gradients.
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::ones({n, 3}, opts) * 1.0f;
+        auto grads = torch::ones({n, 2}, opts) * 1.0f;
         auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
         ctrl.accumulate_gradients(grads, radii);
     }
@@ -254,7 +254,7 @@ TEST(DensificationTest, LowOpacityGetsPruned) {
     }
 
     // Need at least one accumulation step (even with no gradient).
-    auto grads = torch::zeros({n, 3}, opts);
+    auto grads = torch::zeros({n, 2}, opts);
     auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
     ctrl.accumulate_gradients(grads, radii);
 
@@ -314,7 +314,7 @@ TEST(DensificationTest, ModelRemainsValidAfterFullCycle) {
 
     // Accumulate gradients.
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::ones({n, 3}, opts) * 1.0f;
+        auto grads = torch::ones({n, 2}, opts) * 1.0f;
         auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
         ctrl.accumulate_gradients(grads, radii);
     }
@@ -347,7 +347,7 @@ TEST(DensificationTest, MaxGaussiansRespected) {
 
     // Accumulate high gradients to trigger cloning.
     for (int i = 0; i < 5; ++i) {
-        auto grads = torch::ones({n, 3}, opts) * 1.0f;
+        auto grads = torch::ones({n, 2}, opts) * 1.0f;
         auto radii = torch::ones({n}, opts.dtype(torch::kInt32));
         ctrl.accumulate_gradients(grads, radii);
     }

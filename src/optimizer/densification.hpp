@@ -65,14 +65,19 @@ public:
     /// @param scene_extent Scene bounding sphere radius (from Dataset::scene_bounds().extent).
     DensificationController(const DensificationConfig& config, float scene_extent);
 
-    /// @brief Accumulate position gradient norms for visible Gaussians.
+    /// @brief Accumulate screen-space position gradient norms for visible Gaussians.
     ///
     /// Called every iteration after the backward pass. Only Gaussians with
     /// radii > 0 (visible in the current view) contribute to the average.
     ///
-    /// @param dL_dpositions Position gradients [N, 3] from BackwardOutput.
+    /// Following the reference implementation, the densification metric is
+    /// ||dL/d(screen_xy)||_2, the norm of the 2D screen-space position
+    /// gradient. This measures how much the projected position needs to
+    /// change to reduce the loss.
+    ///
+    /// @param dL_dmeans_2d Screen-space position gradients [N, 2] from BackwardOutput.
     /// @param radii Per-Gaussian pixel radii [N] from RenderOutput.
-    void accumulate_gradients(const torch::Tensor& dL_dpositions,
+    void accumulate_gradients(const torch::Tensor& dL_dmeans_2d,
                               const torch::Tensor& radii);
 
     /// @brief Check if densification should run at this step.
@@ -124,11 +129,16 @@ private:
     ///
     /// A Gaussian is kept if:
     ///   - sigmoid(opacity) >= opacity_threshold, AND
-    ///   - max screen radius <= max_screen_size (or max_screen_size == 0)
+    ///   - (only after first opacity reset): max screen radius <= max_screen_size
+    ///   - (only after first opacity reset): max world-space scale <= 0.1 * scene_extent
+    ///
+    /// Following the reference implementation, screen-size and world-space-size
+    /// pruning only applies after the first opacity reset (step > opacity_reset_every).
     ///
     /// @param model The Gaussian model.
+    /// @param step Current training iteration.
     /// @return Boolean tensor [N], true = KEEP.
-    torch::Tensor compute_keep_mask(const GaussianModel& model);
+    torch::Tensor compute_keep_mask(const GaussianModel& model, int step);
 
     /// @brief Append new Gaussians to the model by boolean mask.
     ///

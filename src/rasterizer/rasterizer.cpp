@@ -134,6 +134,7 @@ BackwardOutput render_backward(
             torch::zeros({0, 3}, opts_f),
             torch::zeros({0, 1}, opts_f),
             torch::zeros_like(model.sh_coeffs),
+            torch::zeros({0, 2}, opts_f),
         };
     }
 
@@ -180,6 +181,7 @@ BackwardOutput render_backward(
         proj_bwd.dL_dscales,
         proj_bwd.dL_dopacities,
         proj_bwd.dL_dsh_coeffs,
+        rast_bwd.dL_dmeans_2d,
     };
 }
 

@@ -56,10 +56,10 @@ bool DensificationController::should_reset_opacity(int step) const {
 // ---------------------------------------------------------------------------
 
 void DensificationController::accumulate_gradients(
-    const torch::Tensor& dL_dpositions,
+    const torch::Tensor& dL_dmeans_2d,
     const torch::Tensor& radii) {
 
-    const int64_t n = dL_dpositions.size(0);
+    const int64_t n = dL_dmeans_2d.size(0);
 
     // Lazy init or re-init if model size changed (e.g., after densification).
     if (!grad_accum_.defined() || grad_accum_.size(0) != n) {
@@ -69,8 +69,11 @@ void DensificationController::accumulate_gradients(
     // Visibility mask: only accumulate for Gaussians visible in this view.
     auto visible = radii.gt(0); // [N] bool
 
-    // Gradient norm per Gaussian: ||dL/dpos||_2
-    auto grad_norms = dL_dpositions.norm(2, /*dim=*/1); // [N]
+    // Gradient norm per Gaussian: ||dL/d(screen_xy)||_2
+    // Following the reference implementation, the densification metric is the
+    // norm of the 2D screen-space position gradient, NOT the 3D world-space
+    // gradient. This measures how much the projected position should move.
+    auto grad_norms = dL_dmeans_2d.norm(2, /*dim=*/1); // [N]
 
     // Accumulate only for visible Gaussians.
     grad_accum_.index_put_({visible},
@@ -219,7 +222,7 @@ DensificationStats DensificationController::densify(
     }
 
     // 3. Prune: remove low-opacity, oversized, and split-original Gaussians.
-    auto keep_mask = compute_keep_mask(model);
+    auto keep_mask = compute_keep_mask(model, step);
 
     // Also remove the originals that were split (replaced by 2 children each).
     // split_mask covers the pre-split model size; children are appended at end.
@@ -321,7 +324,7 @@ torch::Tensor DensificationController::compute_split_mask(
 }
 
 torch::Tensor DensificationController::compute_keep_mask(
-    const GaussianModel& model) {
+    const GaussianModel& model, int step) {
 
     const int64_t n = model.num_gaussians();
     auto device = model.positions.device();
@@ -330,21 +333,36 @@ torch::Tensor DensificationController::compute_keep_mask(
     auto opacity_activated = torch::sigmoid(model.opacities.squeeze(1)); // [N]
     auto keep = opacity_activated.ge(config_.opacity_threshold); // [N] bool
 
-    // Screen size check: remove if max observed radius > max_screen_size.
-    // Only meaningful if we have screen-size data and it's enabled.
-    if (config_.max_screen_size > 0 && max_radii_2d_.defined()) {
-        // Extend or slice max_radii_2d_ to match current model size.
-        torch::Tensor radii;
-        if (max_radii_2d_.size(0) >= n) {
-            radii = max_radii_2d_.slice(0, 0, n);
-        } else {
-            auto pad = torch::zeros({n - max_radii_2d_.size(0)},
-                                    max_radii_2d_.options());
-            radii = torch::cat({max_radii_2d_, pad});
+    // Size pruning: only applies after the first opacity reset.
+    // This matches the reference implementation which sets size_threshold = 20
+    // only when iteration > opacity_reset_interval (default 3000).
+    // Before the opacity reset, Gaussians may legitimately have large screen
+    // footprints, so pruning by size would be too aggressive.
+    bool apply_size_pruning = config_.opacity_reset_every > 0 &&
+                              step > config_.opacity_reset_every;
+
+    if (apply_size_pruning) {
+        // Screen size check: remove if max observed radius > max_screen_size.
+        if (config_.max_screen_size > 0 && max_radii_2d_.defined()) {
+            torch::Tensor radii;
+            if (max_radii_2d_.size(0) >= n) {
+                radii = max_radii_2d_.slice(0, 0, n);
+            } else {
+                auto pad = torch::zeros({n - max_radii_2d_.size(0)},
+                                        max_radii_2d_.options());
+                radii = torch::cat({max_radii_2d_, pad});
+            }
+            auto not_too_big = radii.le(
+                static_cast<float>(config_.max_screen_size));
+            keep = keep & not_too_big;
         }
-        auto not_too_big = radii.le(
-            static_cast<float>(config_.max_screen_size));
-        keep = keep & not_too_big;
+
+        // World-space size check: remove if max(exp(scale)) > 0.1 * scene_extent.
+        // This catches Gaussians that grew too large in world space.
+        auto max_scale = std::get<0>(torch::exp(model.scales).max(/*dim=*/1));
+        float ws_threshold = 0.1f * scene_extent_;
+        auto not_too_large_ws = max_scale.le(ws_threshold);
+        keep = keep & not_too_large_ws;
     }
 
     return keep;

@@ -208,9 +208,11 @@ IterationStats Trainer::train_step(int step) {
     // 9. Adaptive density control.
     IterationStats stats;
     if (densify_ctrl_) {
-        // Accumulate gradients every iteration.
+        // Accumulate 2D screen-space gradients every iteration.
+        // The densification metric is ||dL/d(screen_xy)||_2, matching the
+        // reference implementation (not the 3D world-space gradient).
         densify_ctrl_->accumulate_gradients(
-            grads.dL_dpositions, render_out.radii);
+            grads.dL_dmeans_2d, render_out.radii);
 
         // Densify on schedule.
         if (densify_ctrl_->should_densify(step)) {

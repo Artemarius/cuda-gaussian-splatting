@@ -221,3 +221,49 @@ auto max_scale = std::get<0>(torch::exp(model.scales).max(1));
 **Lesson**: libtorch's C++ API frequently returns `std::tuple` where PyTorch Python returns named tuples. Always use `std::get<N>()` for reduction operations like `max`, `min`, `sort`, `topk` that return multiple tensors.
 
 **File**: `src/optimizer/densification.cpp`
+
+---
+
+### Issue 12: Screen-size pruning applied from the first densification step
+
+**Symptom**: First densification at step 500 pruned 81,044 out of 100,000 Gaussians (81%). Loss jumped from ~0.18 to ~0.62 and never recovered — the model entered a destructive clone-then-prune oscillation.
+
+**Root cause**: Our `compute_keep_mask` applied the `max_screen_size = 20` check unconditionally. On a 489×272 image, many valid Gaussians have screen radii >20 pixels, so the size check pruned the majority alongside the low-opacity check.
+
+In the reference implementation, screen-size pruning and world-space-size pruning are **only applied after the first opacity reset** (`iteration > opacity_reset_interval`, default 3000):
+
+```python
+# Reference (train.py):
+size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+gaussians.densify_and_prune(grad_thresh, 0.005, extent, size_threshold)
+```
+
+Before the opacity reset, only opacity-based pruning runs.
+
+**Fix**: Gate size pruning on `step > config_.opacity_reset_every`. Also added the world-space size check (`max(exp(scale)) > 0.1 * scene_extent`) from the reference, gated the same way.
+
+**Lesson**: When porting from a reference implementation, trace every conditional carefully. A default parameter that is `None` for the first N iterations is easy to overlook as "always enabled."
+
+**Files**: `src/optimizer/densification.cpp`, `src/optimizer/densification.hpp`
+
+---
+
+### Issue 13: Densification gradient metric used 3D world-space instead of 2D screen-space
+
+**Symptom**: Zero clones and zero splits at every densification step. Only pruning occurred. The gradient threshold of 0.0002 was never exceeded by any Gaussian.
+
+**Root cause**: The reference implementation accumulates the **2D screen-space** position gradient norm for the densification metric:
+
+```python
+# Reference (gaussian_model.py):
+self.xyz_gradient_accum[filter] += torch.norm(
+    viewspace_point_tensor.grad[filter, :2], dim=-1, keepdim=True)
+```
+
+Our code was accumulating the **3D world-space** position gradient norm (`dL_dpositions [N, 3]`). The 3D gradient is derived from the 2D gradient via the projection Jacobian and view matrix, which scales it down significantly — making the 0.0002 threshold effectively unreachable.
+
+**Fix**: Exposed `dL_dmeans_2d` (already computed as an intermediate in `rasterize_backward`) through `BackwardOutput`. Changed `accumulate_gradients` to accept `[N, 2]` screen-space gradients and compute `||dL/d(screen_xy)||_2`.
+
+**Lesson**: The densification gradient metric is fundamentally a **screen-space** quantity — "how much should this Gaussian's projected position move?" Using world-space gradients changes both the magnitude and meaning of the metric. Always check the coordinate space of gradient-based heuristics against the reference.
+
+**Files**: `src/rasterizer/rasterizer.hpp`, `src/rasterizer/rasterizer.cpp`, `src/optimizer/densification.hpp`, `src/optimizer/densification.cpp`, `src/training/trainer.cpp`

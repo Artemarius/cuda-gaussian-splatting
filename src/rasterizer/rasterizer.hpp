@@ -68,6 +68,7 @@ struct BackwardOutput {
     torch::Tensor dL_dscales;     ///< dL/d(scales) [N, 3], float32 (log-space)
     torch::Tensor dL_dopacities;  ///< dL/d(opacities) [N, 1], float32 (logit-space)
     torch::Tensor dL_dsh_coeffs;  ///< dL/d(sh_coeffs) [N, 3, C], float32
+    torch::Tensor dL_dmeans_2d;   ///< dL/d(means_2d) [N, 2], float32 (for densification)
 };
 
 /// @brief Backward pass through the full render pipeline.
