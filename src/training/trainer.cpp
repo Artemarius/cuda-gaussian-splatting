@@ -91,8 +91,20 @@ Trainer::Trainer(const TrainConfig& config)
                  effective_vram_limit_,
                  config_.memory.vram_limit_mb > 0.0f ? " (user-set)" : " (auto)");
 
-    // Create densification controller.
-    if (!config_.no_densify) {
+    // Create densification controller (ADC or MCMC).
+    if (config_.mcmc_densify) {
+        config_.mcmc.effective_vram_limit_mb = effective_vram_limit_;
+        config_.mcmc.noise_lr_max_steps = config_.max_iterations;
+        mcmc_ctrl_ = std::make_unique<MCMCController>(
+            config_.mcmc, dataset_.scene_bounds().extent);
+        spdlog::info("MCMC densification: from={} until={} every={} "
+                     "dead_thresh={:.4f} cap={:.2f}",
+                     config_.mcmc.relocate_from,
+                     config_.mcmc.relocate_until,
+                     config_.mcmc.relocate_every,
+                     config_.mcmc.dead_opacity_threshold,
+                     config_.mcmc.relocate_cap);
+    } else if (!config_.no_densify) {
         config_.densification.max_gaussians = config_.max_gaussians;
         config_.densification.effective_vram_limit_mb = effective_vram_limit_;
         densify_ctrl_ = std::make_unique<DensificationController>(
@@ -215,6 +227,15 @@ IterationStats Trainer::train_step(int step) {
     // 7. Custom CUDA backward pass.
     auto grads = render_backward(dL_dcolor, render_out, model_, camera, settings);
 
+    // 7b. MCMC regularization gradient injection.
+    // Add opacity/scale regularization gradients before the optimizer step.
+    if (mcmc_ctrl_) {
+        torch::Tensor reg_dL_dopa, reg_dL_dscales;
+        mcmc_ctrl_->compute_regularization(model_, reg_dL_dopa, reg_dL_dscales);
+        grads.dL_dopacities = grads.dL_dopacities + reg_dL_dopa;
+        grads.dL_dscales    = grads.dL_dscales + reg_dL_dscales;
+    }
+
     // 8. Inject gradients and step.
     optimizer_->zero_grad();
     optimizer_->apply_gradients(grads);
@@ -222,10 +243,29 @@ IterationStats Trainer::train_step(int step) {
 
     // 9. Adaptive density control.
     IterationStats stats;
-    if (densify_ctrl_) {
-        // Accumulate 2D screen-space gradients every iteration.
-        // The densification metric is ||dL/d(screen_xy)||_2, matching the
-        // reference implementation (not the 3D world-space gradient).
+    if (mcmc_ctrl_) {
+        // MCMC path: noise injection every iteration, relocation on schedule.
+        stats.mcmc_active = true;
+
+        // Inject position noise every iteration (after optimizer step).
+        mcmc_ctrl_->inject_noise(model_, step);
+
+        // Relocate dead Gaussians on schedule.
+        if (mcmc_ctrl_->should_relocate(step)) {
+            auto mstats = mcmc_ctrl_->relocate(model_, step);
+            stats.num_relocated = mstats.num_relocated;
+
+            if (mstats.num_relocated > 0) {
+                spdlog::info(
+                    "[mcmc relocate {:>5}] relocated={} dead={} total={}{}",
+                    step, mstats.num_relocated, mstats.num_dead,
+                    mstats.num_total,
+                    mstats.skipped_vram ? " (VRAM-limited)" : "");
+            }
+            // No optimizer rebuild needed — N stays constant.
+        }
+    } else if (densify_ctrl_) {
+        // ADC path: gradient accumulation, clone/split/prune.
         densify_ctrl_->accumulate_gradients(
             grads.dL_dmeans_2d, render_out.radii);
 

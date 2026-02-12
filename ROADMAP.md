@@ -558,12 +558,12 @@ build\train -d data\tandt\truck -o output\truck_memsafe -i 1000 -r 4 --max-gauss
 
 ### MCMC Densification (Kheradmand et al.)
 
-- [ ] `src/optimizer/mcmc.hpp/.cpp` — MCMC-based densification (Phase 10, but plan the interface now)
-  - Alternative to clone/split/prune
-  - Treats Gaussians as particles in an MCMC chain
-  - Relocate low-opacity Gaussians instead of pruning + creating new ones
-  - More memory-stable (fixed Gaussian count)
-  - **This is better for 6GB VRAM** since it doesn't grow the Gaussian count
+- [x] `src/optimizer/mcmc_densification.hpp/.cpp` — implemented in Phase 10
+  - Alternative to clone/split/prune with fixed Gaussian count
+  - Relocate low-opacity Gaussians to high-opacity regions
+  - Per-iteration noise injection for exploration
+  - Opacity/scale regularization
+  - **Ideal for 6GB VRAM** since N stays constant throughout training
 
 ### Tests
 
@@ -660,27 +660,58 @@ Can evaluate trained models and produce quality metrics. Results are in the righ
 
 ## Phase 10: MCMC Densification
 
-**Goal**: Implement the MCMC-based densification strategy from Kheradmand et al.
+**Goal**: Implement the MCMC-based densification strategy from Kheradmand et al. (NeurIPS 2024) as an alternative to clone/split/prune.
 
 ### Background
 
-Instead of clone/split/prune, MCMC treats optimization as sampling from a posterior. Low-contribution Gaussians are relocated rather than destroyed. Key advantage: fixed memory footprint — important for the 6GB constraint.
+Instead of clone/split/prune (which grows/shrinks N), MCMC densification maintains a **fixed Gaussian count** by relocating "dead" (low-opacity) Gaussians to high-opacity regions. Per-iteration noise injection guides exploration, and opacity/scale regularization prevents degenerate solutions. Key advantage: constant VRAM footprint — ideal for the 6GB constraint.
 
 ### Tasks
 
-- [ ] `src/optimizer/mcmc.hpp/.cpp`
-  - Stochastic relocation of low-opacity Gaussians to high-gradient regions
-  - Noise injection for exploration
-  - Temperature scheduling
-- [ ] Compare MCMC vs original densification:
-  - Memory usage over training
-  - Final quality metrics
+- [x] `src/optimizer/mcmc_densification.hpp` — `MCMCConfig`, `MCMCStats`, `MCMCController` class
+  - `MCMCConfig`: schedule (relocate_from/until/every), relocation (dead_opacity_threshold=0.005, relocate_cap=0.05), noise (noise_lr_init=5e5, noise_lr_final=1e3, noise_gate_k=100, noise_gate_t=0.995), regularization (lambda_opacity=0.01, lambda_scale=0.01), VRAM fields
+  - `MCMCController`: `should_relocate()`, `relocate()`, `inject_noise()`, `compute_regularization()`, `noise_lr()`
+- [x] `src/optimizer/mcmc_densification.cpp` — controller implementation using libtorch tensor ops
+  - **Relocation**: `dead_mask = sigmoid(opa) < threshold` → sample alive sources via `multinomial(opacity_weights)` → copy SH/rotation from source, jitter position by `randn * scene_extent * 0.01`, set small scale + low opacity. N stays constant.
+  - **Noise injection** (under `NoGradGuard`): `gate = sigmoid(-k * (sigmoid(opa) - t))`, `noise = noise_lr * exp(scales) * gate * randn_like(positions)`, `positions += noise`. Low-opacity Gaussians get more noise.
+  - **Regularization**: `lambda_o * mean(sigmoid(opa)) + lambda_s * mean(exp(scales))` computed on autograd-tracked clones; gradients injected into `BackwardOutput`.
+  - **Noise LR**: log-linear decay from init to final (same formula as `position_lr()`).
+- [x] `src/training/trainer.hpp` — added `bool mcmc_densify`, `MCMCConfig mcmc`, `MCMCController` ptr, MCMC stats to `IterationStats`
+- [x] `src/training/trainer.cpp` — MCMC integration in constructor + `train_step()`:
+  - Step 7b: regularization gradient injection after `render_backward`, before `apply_gradients`
+  - Step 9: MCMC branch — noise injection every iteration, relocation on schedule. No gradient accumulation, no opacity reset, no optimizer rebuild (N constant).
+- [x] `apps/train_main.cpp` — CLI flags: `--mcmc`, `--mcmc-relocate-every`, `--mcmc-lambda-opacity`, `--mcmc-lambda-scale`, `--mcmc-noise-lr`. Validated `--mcmc` + `--no-densify` mutual exclusion.
+- [x] CMake: added `mcmc_densification.cpp` to `cugs_training`, `test_mcmc` to tests
+- [ ] Compare MCMC vs ADC on Truck scene:
+  - Memory usage over training (should be constant for MCMC)
+  - Final quality metrics (PSNR, SSIM)
   - Training time
-- [ ] Make densification strategy a CLI flag: `--densification {default, mcmc}`
+
+### Key Design Decisions
+
+1. **No abstract base class**: MCMCController and DensificationController have different APIs (MCMC needs `inject_noise()` every iter, `compute_regularization()`). Two separate `unique_ptr`s in Trainer, switched by `mcmc_densify` flag.
+2. **No optimizer rebuild on relocate**: N stays constant, so Adam moments remain valid. Stale values for relocated indices adapt within ~10 steps via exponential averaging.
+3. **Regularization via autograd on cloned tensors**: Creates detached copies with `requires_grad_(true)`, computes reg loss, calls `.backward()`, extracts `.grad()` and adds to `BackwardOutput`. Clean injection without modifying the custom CUDA backward pass.
+4. **All libtorch tensor ops**: No custom CUDA kernels for MCMC — relocation runs every ~100 iterations, noise injection is a few elementwise ops per iteration.
+
+### Tests
+
+- [x] `tests/test_mcmc.cpp` — 11 tests:
+  - ShouldRelocateBoundaries: schedule start/end/frequency/exclusions
+  - NoiseLRInitAndFinal: init value at step 0, final at/beyond max_steps
+  - NoiseLRMonotonicDecay: strictly decreasing over training
+  - RelocationFixesDeadGaussians: dead positions change, alive untouched, N constant
+  - RelocateCapRespected: num_relocated <= cap * N
+  - RelocationWithNoDeadIsNoop: all-alive model unchanged
+  - NoiseGateSelectivity: low-opacity Gaussians displaced >2x more than high-opacity
+  - NoiseInjectionModifiesPositions: positions change, model valid
+  - RegularizationIsPositiveScalar: positive value, correct gradient shapes, non-zero grads
+  - ModelValidAfterFullCycle: noise + regularization + relocation → valid model, constant N
+  - ConstantNAcrossMultipleRelocations: 5 relocation steps, N unchanged each time
 
 ### Definition of Done
 
-MCMC densification works and produces comparable quality with more stable memory usage.
+MCMC densification works and produces comparable quality with constant memory usage.
 
 ---
 

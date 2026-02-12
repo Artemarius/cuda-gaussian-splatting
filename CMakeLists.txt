@@ -121,6 +121,7 @@ add_library(cugs_training
     src/optimizer/adam.cpp
     src/optimizer/fused_adam.cu
     src/optimizer/densification.cpp
+    src/optimizer/mcmc_densification.cpp
     src/training/trainer.cpp
 )
 

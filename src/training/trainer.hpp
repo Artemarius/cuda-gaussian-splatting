@@ -10,6 +10,7 @@
 #include "data/dataset.hpp"
 #include "optimizer/fused_adam.hpp"
 #include "optimizer/densification.hpp"
+#include "optimizer/mcmc_densification.hpp"
 #include "training/lr_schedule.hpp"
 #include "utils/memory_monitor.hpp"
 
@@ -65,6 +66,10 @@ struct TrainConfig {
     DensificationConfig densification;
     bool no_densify = false;  ///< Disable densification entirely
 
+    // MCMC densification (alternative to clone/split/prune)
+    bool mcmc_densify = false; ///< Use MCMC densification instead of ADC
+    MCMCConfig mcmc;
+
     // Memory safety
     MemoryLimitConfig memory;
 };
@@ -84,6 +89,10 @@ struct IterationStats {
     int num_split   = 0;
     int num_pruned  = 0;
     bool densified  = false;
+
+    // MCMC stats (zero when MCMC didn't run).
+    int num_relocated = 0;
+    bool mcmc_active  = false;
 };
 
 /// @brief Main training loop for 3D Gaussian Splatting.
@@ -127,6 +136,7 @@ private:
     GaussianModel model_;
     std::unique_ptr<FusedAdam> optimizer_;
     std::unique_ptr<DensificationController> densify_ctrl_;
+    std::unique_ptr<MCMCController> mcmc_ctrl_;
     std::mt19937 rng_;
 
     float effective_vram_limit_ = 0.0f;

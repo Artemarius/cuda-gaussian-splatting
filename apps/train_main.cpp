@@ -47,6 +47,13 @@ void print_usage(const char* program) {
         << "  --grad-threshold <F>      Position gradient threshold (default: 0.0002)\n"
         << "  --no-densify              Disable densification entirely\n"
         << "\n"
+        << "MCMC Densification (alternative to clone/split/prune):\n"
+        << "  --mcmc                    Use MCMC densification (fixed Gaussian count)\n"
+        << "  --mcmc-relocate-every <N> Relocation frequency (default: 100)\n"
+        << "  --mcmc-lambda-opacity <F> Opacity regularization weight (default: 0.01)\n"
+        << "  --mcmc-lambda-scale <F>   Scale regularization weight (default: 0.01)\n"
+        << "  --mcmc-noise-lr <F>       Initial noise learning rate (default: 5e5)\n"
+        << "\n"
         << "Memory:\n"
         << "  --vram-limit <MB>         Hard VRAM usage limit in MB (default: auto)\n"
         << "  -h, --help                Show this help message\n";
@@ -102,6 +109,16 @@ int main(int argc, char* argv[]) {
             config.densification.grad_threshold = static_cast<float>(std::atof(argv[++i]));
         } else if (arg_matches(argv[i], nullptr, "--no-densify")) {
             config.no_densify = true;
+        } else if (arg_matches(argv[i], nullptr, "--mcmc")) {
+            config.mcmc_densify = true;
+        } else if (arg_matches(argv[i], nullptr, "--mcmc-relocate-every") && i + 1 < argc) {
+            config.mcmc.relocate_every = std::atoi(argv[++i]);
+        } else if (arg_matches(argv[i], nullptr, "--mcmc-lambda-opacity") && i + 1 < argc) {
+            config.mcmc.lambda_opacity = static_cast<float>(std::atof(argv[++i]));
+        } else if (arg_matches(argv[i], nullptr, "--mcmc-lambda-scale") && i + 1 < argc) {
+            config.mcmc.lambda_scale = static_cast<float>(std::atof(argv[++i]));
+        } else if (arg_matches(argv[i], nullptr, "--mcmc-noise-lr") && i + 1 < argc) {
+            config.mcmc.noise_lr_init = static_cast<float>(std::atof(argv[++i]));
         } else if (arg_matches(argv[i], nullptr, "--vram-limit") && i + 1 < argc) {
             config.memory.vram_limit_mb = static_cast<float>(std::atof(argv[++i]));
         } else {
@@ -131,6 +148,10 @@ int main(int argc, char* argv[]) {
     }
     if (config.max_sh_degree < 0 || config.max_sh_degree > 3) {
         spdlog::error("SH degree must be 0..3");
+        return 1;
+    }
+    if (config.mcmc_densify && config.no_densify) {
+        spdlog::error("--mcmc and --no-densify are mutually exclusive");
         return 1;
     }
 

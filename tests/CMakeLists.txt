@@ -105,6 +105,13 @@ target_link_libraries(test_metrics PRIVATE
     GTest::gtest_main
 )
 
+add_executable(test_mcmc test_mcmc.cpp)
+
+target_link_libraries(test_mcmc PRIVATE
+    cugs_training
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(test_training DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_backward DISCOVERY_MODE PRE_TEST)
@@ -121,3 +128,4 @@ gtest_discover_tests(test_rasterizer DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_densification DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_fused_adam DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_metrics DISCOVERY_MODE PRE_TEST)
+gtest_discover_tests(test_mcmc DISCOVERY_MODE PRE_TEST)
