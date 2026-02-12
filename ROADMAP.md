@@ -518,10 +518,15 @@ The original paper's densification strategy (every 100 iterations, starting at 5
   - Run opacity reset on schedule; log densification events
 - [x] `apps/train_main.cpp` — added CLI flags: `--densify-from`, `--densify-until`, `--densify-every`, `--grad-threshold`, `--no-densify`
 - [x] CMake: added `densification.cpp` to `cugs_training`, added `test_densification` test target
-- [ ] Tune thresholds for 6GB VRAM:
-  - May need lower `max_gaussians` cap
-  - More aggressive pruning
-  - Start densification earlier or stop earlier
+- [x] Tune thresholds for 6GB VRAM:
+  - Implemented five-part memory safety system (see `docs/issues.md` Issue 14):
+    1. Non-throwing `VramInfo` query in `cuda_utils.cuh`
+    2. `MemoryLimitConfig` + `memory_monitor.hpp` with auto/manual VRAM limit, RAM monitoring
+    3. Per-iteration VRAM safety check with critical-streak abort
+    4. Budget-aware clone/split in densification (reduces count when VRAM tight)
+    5. `emptyCache()` after densification to reclaim freed memory
+  - `--vram-limit <MB>` CLI flag for manual override
+  - Default: auto-reserves 600 MB for display driver on WDDM GPUs
 
 ### Key Design Decisions
 

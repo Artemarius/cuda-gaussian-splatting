@@ -6,6 +6,7 @@
 /// since densification only runs every ~100 iterations.
 
 #include "optimizer/densification.hpp"
+#include "utils/memory_monitor.hpp"
 
 #include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
@@ -96,14 +97,19 @@ DensificationStats DensificationController::densify(
     DensificationStats stats;
     stats.num_before = static_cast<int>(model.num_gaussians());
 
-    // VRAM guard.
-    float free_mb = vram_free_mb();
-    if (free_mb > 0.0f && free_mb < config_.min_vram_headroom_mb) {
-        spdlog::warn("Skipping densification: only {:.0f} MB free (need {:.0f} MB)",
-                     free_mb, config_.min_vram_headroom_mb);
-        stats.skipped_vram = true;
-        stats.num_after = stats.num_before;
-        return stats;
+    // VRAM guard: check available budget against headroom threshold.
+    auto vram = vram_info_mb();
+    if (vram.valid()) {
+        float budget = (config_.effective_vram_limit_mb > 0.0f)
+            ? (config_.effective_vram_limit_mb - vram.used_mb())
+            : vram.free_mb;
+        if (budget < config_.min_vram_headroom_mb) {
+            spdlog::warn("Skipping densification: {:.0f} MB budget (need {:.0f} MB headroom)",
+                         budget, config_.min_vram_headroom_mb);
+            stats.skipped_vram = true;
+            stats.num_after = stats.num_before;
+            return stats;
+        }
     }
 
     torch::NoGradGuard no_grad;
@@ -128,6 +134,37 @@ DensificationStats DensificationController::densify(
                     clone_mask.zero_();
                     clone_mask.index_fill_(0, indices, true);
                     num_to_clone = budget;
+                }
+            }
+        }
+
+        // VRAM budget check: reduce clone count if insufficient VRAM.
+        if (num_to_clone > 0 && config_.effective_vram_limit_mb > 0.0f) {
+            float avail = vram_budget_available_mb(config_.effective_vram_limit_mb);
+            if (avail > 0.0f) {
+                // Infer SH degree from model tensor shape: sh_coeffs is [N, 3, C]
+                int sh_c = static_cast<int>(model.sh_coeffs.size(2));
+                int sh_deg = static_cast<int>(std::sqrt(static_cast<float>(sh_c))) - 1;
+                float needed = estimate_densification_vram_mb(num_to_clone, sh_deg);
+                float headroom = config_.min_vram_headroom_mb;
+                if (needed > avail - headroom) {
+                    int affordable = static_cast<int>(
+                        (avail - headroom) / (needed / num_to_clone));
+                    affordable = std::max(affordable, 0);
+                    if (affordable < num_to_clone) {
+                        if (affordable <= 0) {
+                            num_to_clone = 0;
+                            clone_mask.zero_();
+                        } else {
+                            auto avg_grad = grad_accum_ / grad_count_.clamp_min(1);
+                            auto clone_grads = avg_grad.masked_fill(~clone_mask, -1.0f);
+                            auto [_, indices] = clone_grads.topk(affordable);
+                            clone_mask.zero_();
+                            clone_mask.index_fill_(0, indices, true);
+                            num_to_clone = affordable;
+                        }
+                        spdlog::info("Clone budget reduced to {} by VRAM limit", num_to_clone);
+                    }
                 }
             }
         }
@@ -171,6 +208,43 @@ DensificationStats DensificationController::densify(
                     split_mask.zero_();
                     split_mask.index_fill_(0, indices, true);
                     num_to_split = budget;
+                }
+            }
+        }
+
+        // VRAM budget check: reduce split count if insufficient VRAM.
+        if (num_to_split > 0 && config_.effective_vram_limit_mb > 0.0f) {
+            float avail = vram_budget_available_mb(config_.effective_vram_limit_mb);
+            if (avail > 0.0f) {
+                int sh_c = static_cast<int>(model.sh_coeffs.size(2));
+                int sh_deg = static_cast<int>(std::sqrt(static_cast<float>(sh_c))) - 1;
+                // Each split creates 2 children.
+                float needed = estimate_densification_vram_mb(num_to_split * 2, sh_deg);
+                float headroom = config_.min_vram_headroom_mb;
+                if (needed > avail - headroom) {
+                    int affordable = static_cast<int>(
+                        (avail - headroom) / (needed / num_to_split));
+                    affordable = std::max(affordable, 0);
+                    if (affordable < num_to_split) {
+                        if (affordable <= 0) {
+                            num_to_split = 0;
+                            split_mask.zero_();
+                        } else {
+                            auto avg_grad = grad_accum_ / grad_count_.clamp_min(1);
+                            if (avg_grad.size(0) < model.num_gaussians()) {
+                                auto pad = torch::zeros(
+                                    {model.num_gaussians() - avg_grad.size(0)},
+                                    avg_grad.options());
+                                avg_grad = torch::cat({avg_grad, pad});
+                            }
+                            auto split_grads = avg_grad.masked_fill(~split_mask, -1.0f);
+                            auto [_, indices] = split_grads.topk(affordable);
+                            split_mask.zero_();
+                            split_mask.index_fill_(0, indices, true);
+                            num_to_split = affordable;
+                        }
+                        spdlog::info("Split budget reduced to {} by VRAM limit", num_to_split);
+                    }
                 }
             }
         }
@@ -397,16 +471,6 @@ void DensificationController::prune_gaussians(
     model.opacities = model.opacities.index({keep_mask}).detach().clone().contiguous();
     model.rotations = model.rotations.index({keep_mask}).detach().clone().contiguous();
     model.scales    = model.scales.index({keep_mask}).detach().clone().contiguous();
-}
-
-float DensificationController::vram_free_mb() {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    auto err = cudaMemGetInfo(&free_bytes, &total_bytes);
-    if (err != cudaSuccess) {
-        return -1.0f; // Unknown — don't skip.
-    }
-    return static_cast<float>(free_bytes) / (1024.0f * 1024.0f);
 }
 
 } // namespace cugs

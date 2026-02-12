@@ -11,6 +11,7 @@
 #include "optimizer/adam.hpp"
 #include "optimizer/densification.hpp"
 #include "training/lr_schedule.hpp"
+#include "utils/memory_monitor.hpp"
 
 #include <torch/torch.h>
 
@@ -63,6 +64,9 @@ struct TrainConfig {
     // Densification
     DensificationConfig densification;
     bool no_densify = false;  ///< Disable densification entirely
+
+    // Memory safety
+    MemoryLimitConfig memory;
 };
 
 /// @brief Statistics for a single training iteration.
@@ -111,8 +115,8 @@ public:
     /// @brief Save a checkpoint (PLY file) at the given step.
     void save_checkpoint(int step);
 
-    /// @brief Log current VRAM usage via spdlog.
-    static void log_vram_usage();
+    /// @brief Log current VRAM and RAM usage via spdlog.
+    void log_vram_usage();
 
     /// @brief Access the Gaussian model (for testing).
     const GaussianModel& model() const { return model_; }
@@ -124,6 +128,12 @@ private:
     std::unique_ptr<GaussianAdam> optimizer_;
     std::unique_ptr<DensificationController> densify_ctrl_;
     std::mt19937 rng_;
+
+    float effective_vram_limit_ = 0.0f;
+    int vram_critical_streak_ = 0;
+
+    /// @brief Check VRAM/RAM safety. Returns false to signal abort.
+    bool check_vram_safety(int step);
 };
 
 } // namespace cugs

@@ -6,6 +6,7 @@
 #include "rasterizer/rasterizer.hpp"
 #include "core/gaussian_init.hpp"
 
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <cuda_runtime.h>
 #include <spdlog/spdlog.h>
 
@@ -84,9 +85,16 @@ Trainer::Trainer(const TrainConfig& config)
     // Create optimizer.
     optimizer_ = std::make_unique<GaussianAdam>(model_, config_.adam);
 
+    // Compute effective VRAM limit.
+    effective_vram_limit_ = compute_effective_vram_limit(config_.memory);
+    spdlog::info("Memory safety: VRAM limit = {:.0f} MB{}",
+                 effective_vram_limit_,
+                 config_.memory.vram_limit_mb > 0.0f ? " (user-set)" : " (auto)");
+
     // Create densification controller.
     if (!config_.no_densify) {
         config_.densification.max_gaussians = config_.max_gaussians;
+        config_.densification.effective_vram_limit_mb = effective_vram_limit_;
         densify_ctrl_ = std::make_unique<DensificationController>(
             config_.densification, dataset_.scene_bounds().extent);
         spdlog::info("Densification: from={} until={} every={} grad_thresh={:.1e}",
@@ -101,7 +109,7 @@ Trainer::Trainer(const TrainConfig& config)
     // Create output directory.
     std::filesystem::create_directories(config_.output_path);
 
-    log_vram_usage();
+    log_memory_status(effective_vram_limit_);
 }
 
 void Trainer::train() {
@@ -110,6 +118,13 @@ void Trainer::train() {
     auto t_start = std::chrono::steady_clock::now();
 
     for (int step = 0; step < config_.max_iterations; ++step) {
+        // Per-iteration VRAM safety check.
+        if (!check_vram_safety(step)) {
+            spdlog::error("Aborting training at step {} due to critical VRAM shortage", step);
+            save_checkpoint(step);
+            return;
+        }
+
         auto stats = train_step(step);
 
         // Logging.
@@ -133,9 +148,9 @@ void Trainer::train() {
             save_checkpoint(step);
         }
 
-        // Periodic VRAM logging (every 1000 iterations).
+        // Periodic memory logging (every 1000 iterations).
         if (step > 0 && step % 1000 == 0) {
-            log_vram_usage();
+            log_memory_status(effective_vram_limit_);
         }
     }
 
@@ -229,6 +244,9 @@ IterationStats Trainer::train_step(int step) {
                     model_, config_.adam);
                 optimizer_->update_lr(step);
 
+                // Release cached CUDA memory from old optimizer/tensors.
+                c10::cuda::CUDACachingAllocator::emptyCache();
+
                 spdlog::info(
                     "[densify {:>5}] cloned={} split={} pruned={} "
                     "{} -> {} Gaussians{}",
@@ -270,15 +288,48 @@ void Trainer::save_checkpoint(int step) {
 }
 
 void Trainer::log_vram_usage() {
-    size_t free_bytes = 0;
-    size_t total_bytes = 0;
-    auto err = cudaMemGetInfo(&free_bytes, &total_bytes);
-    if (err == cudaSuccess) {
-        float used_mb = static_cast<float>(total_bytes - free_bytes) / (1024.0f * 1024.0f);
-        float total_mb = static_cast<float>(total_bytes) / (1024.0f * 1024.0f);
-        spdlog::info("VRAM: {:.0f} / {:.0f} MB ({:.1f}% used)",
-                     used_mb, total_mb, 100.0f * used_mb / total_mb);
+    auto info = vram_info_mb();
+    if (info.valid()) {
+        float budget = effective_vram_limit_ - info.used_mb();
+        spdlog::info("VRAM: {:.0f} / {:.0f} MB used | budget: {:.0f} MB | limit: {:.0f} MB",
+                     info.used_mb(), info.total_mb, budget, effective_vram_limit_);
     }
+    float ram = system_ram_available_mb();
+    if (ram >= 0.0f) {
+        spdlog::info("RAM:  {:.0f} MB available", ram);
+    }
+}
+
+bool Trainer::check_vram_safety(int step) {
+    auto info = vram_info_mb();
+    if (!info.valid()) return true;  // Can't query — assume OK.
+
+    float budget = effective_vram_limit_ - info.used_mb();
+
+    // Check system RAM.
+    float ram = system_ram_available_mb();
+    if (ram >= 0.0f && ram < config_.memory.ram_warning_mb) {
+        spdlog::warn("[step {}] Low system RAM: {:.0f} MB available", step, ram);
+    }
+
+    // Check VRAM critical threshold.
+    if (budget < config_.memory.vram_critical_mb) {
+        vram_critical_streak_++;
+        spdlog::warn("[step {}] VRAM critical: {:.0f} MB budget ({}/{} before abort)",
+                     step, budget, vram_critical_streak_,
+                     config_.memory.vram_critical_count);
+        if (vram_critical_streak_ >= config_.memory.vram_critical_count) {
+            return false;  // Signal abort.
+        }
+    } else {
+        // Recovered — reset streak.
+        if (vram_critical_streak_ > 0) {
+            spdlog::info("[step {}] VRAM recovered: {:.0f} MB budget", step, budget);
+        }
+        vram_critical_streak_ = 0;
+    }
+
+    return true;
 }
 
 } // namespace cugs

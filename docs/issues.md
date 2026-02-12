@@ -267,3 +267,29 @@ Our code was accumulating the **3D world-space** position gradient norm (`dL_dpo
 **Lesson**: The densification gradient metric is fundamentally a **screen-space** quantity — "how much should this Gaussian's projected position move?" Using world-space gradients changes both the magnitude and meaning of the metric. Always check the coordinate space of gradient-based heuristics against the reference.
 
 **Files**: `src/rasterizer/rasterizer.hpp`, `src/rasterizer/rasterizer.cpp`, `src/optimizer/densification.hpp`, `src/optimizer/densification.cpp`, `src/training/trainer.cpp`
+
+---
+
+### Issue 14: System freeze during training with densification on 6GB WDDM GPU
+
+**Symptom**: Complete system freeze (hard hang, no display, required power cycle) when training with densification enabled on the RTX 3060 6GB Laptop GPU. The GPU also drives the Windows desktop via WDDM.
+
+**Root cause**: When CUDA exhausts VRAM on a WDDM GPU that drives the display compositor (DWM), the display driver cannot respond to the Windows kernel within the Timeout Detection and Recovery (TDR) window. This causes either a TDR (driver reset, killing the training process and briefly blanking the screen) or, in the worst case, a complete system hang requiring a power cycle.
+
+The existing VRAM guard in densification (`min_vram_headroom_mb = 512`) was insufficient because:
+1. It didn't account for peak memory during `torch::cat` (old + new tensors coexist temporarily)
+2. It didn't limit clone/split budgets by available memory — a single densification step could attempt to allocate more than available
+3. It didn't run per-iteration — VRAM could become critical between densification steps
+4. It used raw free VRAM, not accounting for the display driver's needs
+5. There was no graceful abort — the process would simply OOM and crash (or freeze)
+
+**Fix**: Five-part memory safety system:
+1. **`VramInfo` + non-throwing `vram_info_mb()`** in `cuda_utils.cuh` — safe VRAM query that never throws, returns sentinel on failure
+2. **`MemoryLimitConfig` + `memory_monitor.hpp`** — configurable VRAM limit (auto: total minus 600 MB safety margin, or user-set via `--vram-limit`), system RAM monitoring, VRAM budget helpers, densification VRAM estimator
+3. **Per-iteration VRAM safety check** in `Trainer::train()` — checks budget every iteration before `train_step()`. If budget drops below critical threshold (200 MB) for 5 consecutive iterations, saves checkpoint and aborts gracefully
+4. **Budget-aware clone/split** in `DensificationController::densify()` — estimates VRAM needed for cloned/split Gaussians, reduces count via topk selection if over budget
+5. **`emptyCache()` after densification** — releases cached CUDA allocator memory after optimizer rebuild, reclaiming freed tensor memory immediately
+
+**Lesson**: On WDDM GPUs that drive the desktop, CUDA OOM is not just a process-level error — it's a system-level failure. Memory safety must be proactive (budget-based), not reactive (catch OOM). The display driver needs a meaningful VRAM reservation (500-600 MB on a 6 GB card) that training must never encroach on.
+
+**Files**: `src/utils/cuda_utils.cuh`, `src/utils/memory_monitor.hpp` (new), `src/training/trainer.hpp`, `src/training/trainer.cpp`, `src/optimizer/densification.hpp`, `src/optimizer/densification.cpp`, `apps/train_main.cpp`

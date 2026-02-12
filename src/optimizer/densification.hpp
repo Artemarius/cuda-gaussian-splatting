@@ -36,6 +36,11 @@ struct DensificationConfig {
     // Capacity
     int   max_gaussians       = 0;     ///< Hard cap (0 = no limit)
     float min_vram_headroom_mb = 512.0f; ///< Skip densification if free VRAM below this
+
+    /// Effective VRAM limit in MB (set by Trainer from MemoryLimitConfig).
+    /// When > 0, densification budgets clone/split by available VRAM.
+    /// When 0, falls back to raw free VRAM for the headroom check.
+    float effective_vram_limit_mb = 0.0f;
 };
 
 /// @brief Statistics from a single densification step.
@@ -161,9 +166,6 @@ private:
     /// @param model Gaussian model (modified in-place).
     /// @param keep_mask Boolean tensor [N], true = keep.
     void prune_gaussians(GaussianModel& model, const torch::Tensor& keep_mask);
-
-    /// @brief Get free VRAM in megabytes.
-    static float vram_free_mb();
 };
 
 } // namespace cugs

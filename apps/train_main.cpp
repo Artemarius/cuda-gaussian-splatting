@@ -46,6 +46,9 @@ void print_usage(const char* program) {
         << "  --densify-every <N>       Densify every N steps (default: 100)\n"
         << "  --grad-threshold <F>      Position gradient threshold (default: 0.0002)\n"
         << "  --no-densify              Disable densification entirely\n"
+        << "\n"
+        << "Memory:\n"
+        << "  --vram-limit <MB>         Hard VRAM usage limit in MB (default: auto)\n"
         << "  -h, --help                Show this help message\n";
 }
 
@@ -99,6 +102,8 @@ int main(int argc, char* argv[]) {
             config.densification.grad_threshold = static_cast<float>(std::atof(argv[++i]));
         } else if (arg_matches(argv[i], nullptr, "--no-densify")) {
             config.no_densify = true;
+        } else if (arg_matches(argv[i], nullptr, "--vram-limit") && i + 1 < argc) {
+            config.memory.vram_limit_mb = static_cast<float>(std::atof(argv[++i]));
         } else {
             spdlog::error("Unknown argument: {}", argv[i]);
             print_usage(argv[0]);
