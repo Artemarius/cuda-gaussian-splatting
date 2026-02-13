@@ -721,7 +721,7 @@ MCMC densification works and produces comparable quality with constant memory us
 
 ### Architecture
 
-Reuses the existing CUDA rasterizer (`cugs::render()`) for GPU-accelerated splatting, then transfers the resulting `[H,W,3]` float tensor to CPU and uploads to an OpenGL texture for display as a fullscreen quad. This guarantees identical visual output to training.
+Reuses the existing CUDA rasterizer (`cugs::render()`) for GPU-accelerated splatting, then transfers the resulting `[H,W,4]` RGBA float tensor to CPU and uploads to an OpenGL texture for display as a fullscreen quad. Uses RGBA format (not RGB) to avoid NVIDIA driver bugs with `GL_RGB32F` textures on Windows. This guarantees identical visual output to training.
 
 ### Tasks
 
@@ -736,7 +736,7 @@ Reuses the existing CUDA rasterizer (`cugs::render()`) for GPU-accelerated splat
 - [x] `src/viewer/viewer.cpp` — viewer implementation
   - GLFW window + OpenGL 2.1 context (no GLAD/GLEW — manual GL extension loading via `glfwGetProcAddress`)
   - GLSL 120 fullscreen quad shader for texture display
-  - CUDA rasterizer integration: `render()` → CPU transfer → `glTexSubImage2D`
+  - CUDA rasterizer integration: `render()` → RGB→RGBA pad on GPU → CPU transfer → `glTexSubImage2D`
   - Three render modes: RGB, depth (1-final_T with turbo colormap), heatmap (n_contrib normalized)
   - ImGui overlay: FPS, Gaussian count, VRAM usage, render mode selector, SH degree slider, FOV control
   - Mouse input: left-drag=orbit, middle/right-drag=pan, scroll=zoom

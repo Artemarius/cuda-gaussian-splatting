@@ -83,6 +83,8 @@ private:
     // Window/GL
     GLFWwindow* window_ = nullptr;
     unsigned int texture_id_ = 0;
+    int texture_width_ = 0;   ///< Actual GL texture dimensions (may differ from framebuffer)
+    int texture_height_ = 0;
     unsigned int vao_ = 0;
     unsigned int vbo_ = 0;
     unsigned int shader_program_ = 0;

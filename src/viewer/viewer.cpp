@@ -50,6 +50,7 @@ using GLchar = char;
 #define GL_TEXTURE0               0x84C0
 #define GL_CLAMP_TO_EDGE          0x812F
 #define GL_RGB32F                 0x8815
+#define GL_RGBA32F                0x8814
 #endif
 
 // Function pointer types
@@ -296,7 +297,13 @@ void Viewer::init_gl_resources() {
     // Load GL 2.0+ extension functions
     load_gl_functions();
 
-    // Create texture for rendered image
+    // Pixel upload settings — use alignment of 1 for safety and RGBA format
+    // to avoid driver bugs with 3-component float textures (GL_RGB32F).
+    // Many NVIDIA drivers on Windows internally convert GL_RGB to GL_RGBA
+    // with incorrect stride calculations, causing visible vertical seams.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // Create texture for rendered image (RGBA for driver compatibility)
     glGenTextures(1, &texture_id_);
     glBindTexture(GL_TEXTURE_2D, texture_id_);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -304,9 +311,11 @@ void Viewer::init_gl_resources() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     // Allocate initial texture storage
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F,
                  framebuffer_width_, framebuffer_height_,
-                 0, GL_RGB, GL_FLOAT, nullptr);
+                 0, GL_RGBA, GL_FLOAT, nullptr);
+    texture_width_ = framebuffer_width_;
+    texture_height_ = framebuffer_height_;
     glBindTexture(GL_TEXTURE_2D, 0);
 
     // Compile shaders
@@ -435,18 +444,20 @@ torch::Tensor Viewer::apply_heat_colormap(const torch::Tensor& values) {
 // ---------------------------------------------------------------------------
 
 void Viewer::upload_texture(const torch::Tensor& image) {
-    // image: [H, W, 3] float32, assumed contiguous and on CPU
+    // image: [H, W, 4] float32 RGBA, assumed contiguous and on CPU
     int h = static_cast<int>(image.size(0));
     int w = static_cast<int>(image.size(1));
 
     glBindTexture(GL_TEXTURE_2D, texture_id_);
 
-    // Re-allocate if size changed
-    if (w != framebuffer_width_ || h != framebuffer_height_) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, w, h, 0, GL_RGB, GL_FLOAT,
+    // Re-allocate if size changed (compare against actual texture dimensions)
+    if (w != texture_width_ || h != texture_height_) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT,
                      image.data_ptr<float>());
+        texture_width_ = w;
+        texture_height_ = h;
     } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB, GL_FLOAT,
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_FLOAT,
                         image.data_ptr<float>());
     }
 
@@ -489,8 +500,11 @@ void Viewer::render_frame() {
         }
     }
 
-    // Transfer to CPU and upload to GL texture
-    auto cpu_image = display.to(torch::kCPU).contiguous();
+    // Convert RGB [H,W,3] to RGBA [H,W,4] on GPU, then transfer to CPU.
+    // RGBA avoids GL_RGB32F driver bugs that cause vertical seam artifacts.
+    auto alpha = torch::ones({display.size(0), display.size(1), 1}, display.options());
+    auto rgba = torch::cat({display, alpha}, /*dim=*/2);
+    auto cpu_image = rgba.to(torch::kCPU).contiguous();
 
     // First-frame diagnostics to verify rendering is working
     if (frame_count_ == 0) {

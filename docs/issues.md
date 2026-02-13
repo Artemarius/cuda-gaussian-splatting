@@ -336,24 +336,48 @@ The existing VRAM guard in densification (`min_vram_headroom_mb = 512`) was insu
 
 ### Issue 17: Vertical seam/transition line on right side of viewer
 
-**Status**: Open
+**Status**: Resolved
 
 **Symptom**: A visible vertical line appears on the right portion of the rendered viewer window. The line creates a sharp discontinuity where the image content or brightness abruptly transitions, as if two different regions are stitched together incorrectly. Visible in both still and orbiting views at 1280x720.
 
 **Screenshots**: `C:\Users\Artem\Documents\Lightshot\Screenshot_100.png`, `Screenshot_101.png`
 
-**Likely causes to investigate** (in order of probability):
+**Root cause**: NVIDIA drivers on Windows have a known issue with `GL_RGB32F` (3-component float) textures. The driver internally converts `GL_RGB` to `GL_RGBA` during texture upload with incorrect stride calculations, producing a vertical seam where the accumulated row offset error becomes visible.
 
-1. **GL_UNPACK_ALIGNMENT mismatch**: OpenGL defaults `GL_UNPACK_ALIGNMENT` to 4 bytes. The texture upload in `upload_texture()` uses `GL_RGB` + `GL_FLOAT` (12 bytes/pixel), so row stride = `W * 12`. For W=1280 this is 15360, divisible by 4, so alignment should be fine at 1280 — but if the framebuffer size differs from 1280 (e.g., DPI scaling), a non-aligned width could cause row shifting. Fix: call `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` before texture upload.
+A secondary bug was also present: `upload_texture()` compared image dimensions against `framebuffer_width_/height_` to decide whether to reallocate the texture, but after a window resize the texture remained at its old dimensions while `framebuffer_width_/height_` updated. This caused `glTexSubImage2D` to write new-size data into an old-size texture.
 
-2. **Framebuffer vs window size mismatch**: `glfwGetFramebufferSize()` may return a different size than the window pixel dimensions on high-DPI displays. If the CUDA rasterizer renders at window size but the texture is uploaded at framebuffer size (or vice versa), the rightmost columns could show stale/misaligned data.
+**Fix**: Three changes:
 
-3. **Tensor memory stride**: The `display.to(torch::kCPU).contiguous()` call should produce a contiguous `[H,W,3]` tensor, but if the CUDA rasterizer's output tensor has unexpected strides (e.g., padded rows from tile-aligned allocation), `.contiguous()` might not resolve a subtle pitch mismatch. Verify with `tensor.strides()`.
+1. **GL_RGB → GL_RGBA format**: The rendered `[H,W,3]` tensor is padded to `[H,W,4]` (alpha=1.0) on GPU before CPU transfer. Texture uses `GL_RGBA32F` internal format and `GL_RGBA`+`GL_FLOAT` upload, eliminating the driver's buggy 3→4 channel conversion.
 
-4. **Tile-boundary artifact in rasterizer**: The forward kernel (`forward.cu:71`) bounds-checks pixels with `inside = (px < img_w) && (py < img_h)`. With 16x16 tiles and W=1280 (exactly 80 tiles), this should be clean. But if the output tensor is allocated at tile-rounded dimensions rather than exact image dimensions, the extra columns would contain zeros (black) or uninitialized values.
+2. **GL_UNPACK_ALIGNMENT = 1**: Set once during init as a safety measure against row-stride misalignment.
 
-5. **Texture re-allocation logic**: In `upload_texture()`, the texture is only re-allocated via `glTexImage2D` when size changes; otherwise `glTexSubImage2D` is used. If the initial allocation size doesn't match the first frame's render dimensions, stale texture data could persist in part of the texture.
+3. **Texture dimension tracking**: Added `texture_width_`/`texture_height_` members to track the actual GL texture size independently from `framebuffer_width_/height_`. `upload_texture()` now compares against these and updates them on reallocation.
 
-**Additional observation**: The viewer runs with noticeable lag (~27ms/frame from the ImGui overlay), making interactive navigation difficult. This is a separate performance issue likely caused by the synchronous CUDA-to-CPU tensor transfer (`display.to(torch::kCPU)`) blocking the render loop.
+**Lesson**: Avoid `GL_RGB` (3-component) textures on Windows, especially with float formats. Many NVIDIA drivers internally store all textures as RGBA and the RGB→RGBA expansion path has driver bugs. Always prefer `GL_RGBA` uploads, even if it means padding the source data. The overhead of the extra channel is negligible compared to the CUDA render time.
 
-**Files to investigate**: `src/viewer/viewer.cpp` (upload_texture, render_frame), `src/rasterizer/forward.cu` (output tensor allocation), `src/rasterizer/rasterizer.hpp` (render function return tensor shapes)
+**Files**: `src/viewer/viewer.hpp`, `src/viewer/viewer.cpp`
+
+---
+
+### Issue 18: Viewer too slow for interactive camera manipulation
+
+**Status**: Open
+
+**Symptom**: The viewer runs at ~0.7 FPS (~1400 ms/frame) on the Truck scene (50k Gaussians, 1280x720, RTX 3060 6GB). Camera orbit/pan/zoom is effectively unusable — input feels extremely laggy because each mouse movement waits for a full CUDA render + synchronous GPU→CPU transfer + GL texture upload before the next frame.
+
+**Root cause**: The render loop is fully synchronous: every frame re-renders the entire scene from scratch via the CUDA rasterizer, transfers the result to CPU, and uploads to an OpenGL texture. The GPU→CPU transfer (`tensor.to(kCPU)`) is the main bottleneck, as it requires a full CUDA synchronization.
+
+**Ideas to explore**:
+
+1. **Skip re-render when camera is static**: Track whether the camera changed since the last frame. If not, reuse the previous texture — costs zero GPU time for still frames.
+
+2. **Render snapshots at reduced resolution during interaction**: While the mouse is dragging, render at 1/2 or 1/4 resolution for responsive feedback, then render at full resolution once the camera stops moving.
+
+3. **CUDA-OpenGL interop** (`cudaGraphicsGLRegisterImage`): Write the CUDA rasterizer output directly to the GL texture without a CPU roundtrip. This eliminates the synchronous GPU→CPU→GPU transfer entirely. Requires registering the GL texture as a CUDA surface.
+
+4. **Asynchronous double-buffering**: Render frame N+1 on a CUDA stream while displaying frame N. Use `cudaStreamSynchronize` only when swapping buffers. Hides render latency behind display time.
+
+5. **Progressive rendering**: For the first few frames after a camera move, render a coarse image (fewer Gaussians or lower resolution) and progressively refine.
+
+**Files**: `src/viewer/viewer.cpp` (render_frame, main loop)
