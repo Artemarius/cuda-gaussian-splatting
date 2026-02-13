@@ -11,6 +11,9 @@
 #include "rasterizer/rasterizer.hpp"
 #include "viewer/camera_controller.hpp"
 
+#include <cuda_runtime.h>
+
+#include <cstdint>
 #include <filesystem>
 #include <string>
 
@@ -61,11 +64,25 @@ private:
     void init_imgui();
     void cleanup();
     void process_input();
+    void check_dirty();
     void render_frame();
+    void draw_scene();
     void draw_imgui();
 
-    /// @brief Upload a [H,W,3] float tensor to the GL texture.
+    /// @brief Upload a [H,W,4] float CPU tensor to the GL texture.
     void upload_texture(const torch::Tensor& image);
+
+    /// @brief Upload a [H,W,4] float GPU tensor via CUDA-GL interop PBO.
+    void upload_texture_interop(const torch::Tensor& rgba_gpu);
+
+    /// @brief Initialize PBO and register with CUDA for GL interop.
+    void init_cuda_gl_interop();
+
+    /// @brief Resize PBO to match new dimensions.
+    void resize_pbo(int w, int h);
+
+    /// @brief Release CUDA-GL interop resources.
+    void cleanup_cuda_gl_interop();
 
     /// @brief Apply a colormap to a single-channel [H,W] tensor.
     /// @return [H,W,3] float tensor with colormap applied.
@@ -91,11 +108,29 @@ private:
     int framebuffer_width_ = 0;
     int framebuffer_height_ = 0;
 
+    // CUDA-GL interop (PBO)
+    unsigned int pbo_id_ = 0;
+    size_t pbo_size_ = 0;
+    cudaGraphicsResource_t cuda_pbo_resource_ = nullptr;
+    bool interop_available_ = false;
+
+    // Dirty tracking — skip rendering when nothing changed
+    bool needs_render_ = true;
+    uint64_t last_camera_version_ = 0;
+    RenderSettings last_render_settings_{};
+    RenderMode last_render_mode_ = RenderMode::kRGB;
+    int last_render_width_ = 0;
+    int last_render_height_ = 0;
+    bool camera_moved_this_frame_ = false;
+    bool last_was_interactive_ = false;
+
     // Frame timing
     double last_frame_time_ = 0.0;
     float frame_dt_ = 0.0f;
     float fps_ = 0.0f;
     int frame_count_ = 0;
+    int render_width_ = 0;   ///< Actual resolution used for last render
+    int render_height_ = 0;
 
     // Mouse state
     bool mouse_left_down_ = false;

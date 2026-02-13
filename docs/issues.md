@@ -362,22 +362,40 @@ A secondary bug was also present: `upload_texture()` compared image dimensions a
 
 ### Issue 18: Viewer too slow for interactive camera manipulation
 
-**Status**: Open
+**Status**: Partially resolved
 
 **Symptom**: The viewer runs at ~0.7 FPS (~1400 ms/frame) on the Truck scene (50k Gaussians, 1280x720, RTX 3060 6GB). Camera orbit/pan/zoom is effectively unusable — input feels extremely laggy because each mouse movement waits for a full CUDA render + synchronous GPU→CPU transfer + GL texture upload before the next frame.
 
 **Root cause**: The render loop is fully synchronous: every frame re-renders the entire scene from scratch via the CUDA rasterizer, transfers the result to CPU, and uploads to an OpenGL texture. The GPU→CPU transfer (`tensor.to(kCPU)`) is the main bottleneck, as it requires a full CUDA synchronization.
 
-**Ideas to explore**:
+**Partial fix (v1)**: Three optimizations implemented together:
 
-1. **Skip re-render when camera is static**: Track whether the camera changed since the last frame. If not, reuse the previous texture — costs zero GPU time for still frames.
+1. **Static camera frame reuse**: `CameraController` now has a monotonic `version_` counter incremented on every mutation. `check_dirty()` compares camera version, render settings, render mode, and framebuffer dimensions against last-rendered values. When nothing changed, `render_frame()` is skipped entirely — only `draw_scene()` (fullscreen quad from cached texture) + ImGui runs. Static FPS goes from ~0.7 to effectively unlimited (vsync-limited).
 
-2. **Render snapshots at reduced resolution during interaction**: While the mouse is dragging, render at 1/2 or 1/4 resolution for responsive feedback, then render at full resolution once the camera stops moving.
+2. **CUDA-GL interop via PBO**: A Pixel Buffer Object is registered with CUDA via `cudaGraphicsGLRegisterBuffer`. The render result (RGBA float tensor on GPU) is copied device-to-device into the mapped PBO, then `glTexSubImage2D` reads from the PBO to update the texture. This eliminates the `tensor.to(kCPU)` synchronization entirely. Falls back to the CPU path if interop init fails.
 
-3. **CUDA-OpenGL interop** (`cudaGraphicsGLRegisterImage`): Write the CUDA rasterizer output directly to the GL texture without a CPU roundtrip. This eliminates the synchronous GPU→CPU→GPU transfer entirely. Requires registering the GL texture as a CUDA surface.
+3. **Interactive resolution scaling**: During camera drag (`camera_moved_this_frame_`), renders at half resolution (e.g., 640x360 instead of 1280x720). When the camera stops, one full-resolution refinement frame is rendered. Bilinear texture filtering (`GL_LINEAR`) handles upscaling.
 
-4. **Asynchronous double-buffering**: Render frame N+1 on a CUDA stream while displaying frame N. Use `cudaStreamSynchronize` only when swapping buffers. Hides render latency behind display time.
+**Results**: Static camera now shows high FPS. Interactive camera (orbit/pan) is improved but still not smooth enough. Zoom (scroll wheel) causes severe FPS drops — responsiveness is significantly worse than orbit/pan.
 
-5. **Progressive rendering**: For the first few frames after a camera move, render a coarse image (fewer Gaussians or lower resolution) and progressively refine.
+**Remaining problems**:
 
-**Files**: `src/viewer/viewer.cpp` (render_frame, main loop)
+1. **Seam artifacts**: Both horizontal, vertical, and corner-like seam artifacts are visible during rendering. This is a separate issue from Issue 17 (which was GL_RGB32F specific) — these seams appear even with the RGBA format and PBO interop path. May be related to PBO upload synchronization, texture reallocation during resolution changes (half→full→half), or driver behavior with dynamic texture resizing.
+
+2. **Zoom responsiveness**: Scroll wheel zoom is much less responsive than orbit/pan. Each scroll event triggers a re-render, and scroll events can fire rapidly. Half resolution (2x reduction) is insufficient to make the CUDA render fast enough for smooth zoom interaction.
+
+3. **Half resolution still too slow for smooth interaction**: Even at 640x360, the CUDA rasterizer + PBO transfer takes long enough that camera manipulation doesn't feel fluid. A more aggressive approach may be needed.
+
+**Ideas for next iteration**:
+
+1. **More aggressive resolution scaling**: Render at 1/4 resolution during interaction (320x180), or dynamically adapt based on measured frame time.
+
+2. **Wireframe/placeholder during interaction**: Skip CUDA rendering entirely during camera drag. Instead, show a lightweight placeholder (coordinate axes, bounding box wireframe, or trackball visualization) that updates at native framerate. Render the full scene only when the camera stops.
+
+3. **Debounce zoom events**: Accumulate scroll events over a short window and render once, rather than re-rendering on every scroll tick.
+
+4. **Investigate seam artifacts**: May require synchronization barriers between PBO unmap and `glTexSubImage2D`, or avoiding texture reallocation during resolution transitions (use a fixed full-resolution texture and only upload a sub-rectangle).
+
+5. **Asynchronous double-buffering**: Render frame N+1 on a CUDA stream while displaying frame N. Hides render latency behind display time.
+
+**Files**: `src/viewer/viewer.hpp`, `src/viewer/viewer.cpp`, `src/viewer/camera_controller.hpp`, `CMakeLists.txt`

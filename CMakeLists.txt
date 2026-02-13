@@ -142,6 +142,7 @@ target_link_libraries(cugs_viewer PUBLIC
     glfw
     imgui::imgui
     OpenGL::GL
+    CUDA::cudart
 )
 
 # -----------------------------------------------------------------------------

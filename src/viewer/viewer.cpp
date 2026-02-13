@@ -22,6 +22,7 @@
 #endif
 #include <GL/gl.h>
 #include <GLFW/glfw3.h>
+#include <cuda_gl_interop.h>
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
@@ -51,6 +52,8 @@ using GLchar = char;
 #define GL_CLAMP_TO_EDGE          0x812F
 #define GL_RGB32F                 0x8815
 #define GL_RGBA32F                0x8814
+#define GL_PIXEL_UNPACK_BUFFER    0x88EC
+#define GL_STREAM_DRAW            0x88E0
 #endif
 
 // Function pointer types
@@ -340,6 +343,9 @@ void Viewer::init_gl_resources() {
     gl_BindBuffer(GL_ARRAY_BUFFER, vbo_);
     gl_BufferData(GL_ARRAY_BUFFER, sizeof(quad_vertices), quad_vertices, GL_STATIC_DRAW);
     gl_BindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // Initialize CUDA-GL interop for zero-copy GPU→texture transfer
+    init_cuda_gl_interop();
 }
 
 void Viewer::init_imgui() {
@@ -356,6 +362,8 @@ void Viewer::init_imgui() {
 
 void Viewer::cleanup() {
     if (window_) {
+        cleanup_cuda_gl_interop();
+
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
@@ -464,12 +472,173 @@ void Viewer::upload_texture(const torch::Tensor& image) {
     glBindTexture(GL_TEXTURE_2D, 0);
 }
 
+void Viewer::init_cuda_gl_interop() {
+    size_t buf_size = static_cast<size_t>(framebuffer_width_) * framebuffer_height_ * 4 * sizeof(float);
+    if (buf_size == 0) {
+        interop_available_ = false;
+        return;
+    }
+
+    gl_GenBuffers(1, &pbo_id_);
+    if (pbo_id_ == 0) {
+        spdlog::warn("CUDA-GL interop: failed to create PBO, using CPU fallback");
+        interop_available_ = false;
+        return;
+    }
+
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+    gl_BufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<ptrdiff_t>(buf_size), nullptr, GL_STREAM_DRAW);
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    cudaError_t err = cudaGraphicsGLRegisterBuffer(
+        &cuda_pbo_resource_, pbo_id_, cudaGraphicsRegisterFlagsWriteDiscard);
+    if (err != cudaSuccess) {
+        spdlog::warn("CUDA-GL interop: cudaGraphicsGLRegisterBuffer failed ({}), using CPU fallback",
+                     cudaGetErrorString(err));
+        gl_DeleteBuffers(1, &pbo_id_);
+        pbo_id_ = 0;
+        cuda_pbo_resource_ = nullptr;
+        interop_available_ = false;
+        return;
+    }
+
+    pbo_size_ = buf_size;
+    interop_available_ = true;
+    spdlog::info("CUDA-GL interop enabled (PBO {} bytes)", buf_size);
+}
+
+void Viewer::resize_pbo(int w, int h) {
+    size_t new_size = static_cast<size_t>(w) * h * 4 * sizeof(float);
+    if (new_size == pbo_size_) return;
+
+    // Unregister old resource
+    if (cuda_pbo_resource_) {
+        cudaGraphicsUnregisterResource(cuda_pbo_resource_);
+        cuda_pbo_resource_ = nullptr;
+    }
+
+    // Resize the PBO
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+    gl_BufferData(GL_PIXEL_UNPACK_BUFFER, static_cast<ptrdiff_t>(new_size), nullptr, GL_STREAM_DRAW);
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    // Re-register
+    cudaError_t err = cudaGraphicsGLRegisterBuffer(
+        &cuda_pbo_resource_, pbo_id_, cudaGraphicsRegisterFlagsWriteDiscard);
+    if (err != cudaSuccess) {
+        spdlog::warn("CUDA-GL interop: resize re-register failed ({}), falling back to CPU",
+                     cudaGetErrorString(err));
+        interop_available_ = false;
+        return;
+    }
+
+    pbo_size_ = new_size;
+}
+
+void Viewer::upload_texture_interop(const torch::Tensor& rgba_gpu) {
+    int h = static_cast<int>(rgba_gpu.size(0));
+    int w = static_cast<int>(rgba_gpu.size(1));
+    size_t byte_count = static_cast<size_t>(w) * h * 4 * sizeof(float);
+
+    // Resize PBO if needed
+    if (byte_count != pbo_size_) {
+        resize_pbo(w, h);
+        if (!interop_available_) return;
+    }
+
+    // Map PBO into CUDA address space
+    cudaError_t err = cudaGraphicsMapResources(1, &cuda_pbo_resource_, 0);
+    if (err != cudaSuccess) {
+        spdlog::warn("cudaGraphicsMapResources failed: {}", cudaGetErrorString(err));
+        interop_available_ = false;
+        return;
+    }
+
+    void* pbo_ptr = nullptr;
+    size_t mapped_size = 0;
+    err = cudaGraphicsResourceGetMappedPointer(&pbo_ptr, &mapped_size, cuda_pbo_resource_);
+    if (err != cudaSuccess) {
+        cudaGraphicsUnmapResources(1, &cuda_pbo_resource_, 0);
+        spdlog::warn("cudaGraphicsResourceGetMappedPointer failed: {}", cudaGetErrorString(err));
+        interop_available_ = false;
+        return;
+    }
+
+    // GPU-to-GPU copy (no CPU sync!)
+    cudaMemcpy(pbo_ptr, rgba_gpu.data_ptr<float>(), byte_count, cudaMemcpyDeviceToDevice);
+
+    cudaGraphicsUnmapResources(1, &cuda_pbo_resource_, 0);
+
+    // Upload from PBO to texture
+    glBindTexture(GL_TEXTURE_2D, texture_id_);
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo_id_);
+
+    if (w != texture_width_ || h != texture_height_) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA32F, w, h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        texture_width_ = w;
+        texture_height_ = h;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_FLOAT, nullptr);
+    }
+
+    gl_BindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void Viewer::cleanup_cuda_gl_interop() {
+    if (cuda_pbo_resource_) {
+        cudaGraphicsUnregisterResource(cuda_pbo_resource_);
+        cuda_pbo_resource_ = nullptr;
+    }
+    if (pbo_id_ && gl_DeleteBuffers) {
+        gl_DeleteBuffers(1, &pbo_id_);
+        pbo_id_ = 0;
+    }
+    pbo_size_ = 0;
+    interop_available_ = false;
+}
+
+void Viewer::check_dirty() {
+    bool camera_moved = camera_.version() != last_camera_version_;
+    bool settings_changed =
+        render_settings_.active_sh_degree != last_render_settings_.active_sh_degree ||
+        render_settings_.scale_modifier != last_render_settings_.scale_modifier ||
+        render_settings_.background[0] != last_render_settings_.background[0] ||
+        render_settings_.background[1] != last_render_settings_.background[1] ||
+        render_settings_.background[2] != last_render_settings_.background[2];
+    bool mode_changed = render_mode_ != last_render_mode_;
+    bool size_changed = framebuffer_width_ != last_render_width_ ||
+                        framebuffer_height_ != last_render_height_;
+
+    if (camera_moved || settings_changed || mode_changed || size_changed) {
+        needs_render_ = true;
+        camera_moved_this_frame_ = camera_moved;
+    } else if (last_was_interactive_) {
+        // Camera just stopped — render one full-resolution frame
+        needs_render_ = true;
+        camera_moved_this_frame_ = false;
+    } else {
+        needs_render_ = false;
+        camera_moved_this_frame_ = false;
+    }
+}
+
 void Viewer::render_frame() {
     // Ensure we have a valid framebuffer
     if (framebuffer_width_ <= 0 || framebuffer_height_ <= 0) return;
 
+    // Interactive resolution scaling: render at half resolution during camera drag
+    int rw = framebuffer_width_;
+    int rh = framebuffer_height_;
+    if (camera_moved_this_frame_) {
+        rw = std::max(rw / 2, 1);
+        rh = std::max(rh / 2, 1);
+    }
+    render_width_ = rw;
+    render_height_ = rh;
+
     // Build camera for current view
-    auto camera = camera_.build_camera(framebuffer_width_, framebuffer_height_);
+    auto camera = camera_.build_camera(rw, rh);
 
     // Render with CUDA rasterizer
     torch::NoGradGuard no_grad;
@@ -500,29 +669,49 @@ void Viewer::render_frame() {
         }
     }
 
-    // Convert RGB [H,W,3] to RGBA [H,W,4] on GPU, then transfer to CPU.
+    // Convert RGB [H,W,3] to RGBA [H,W,4].
     // RGBA avoids GL_RGB32F driver bugs that cause vertical seam artifacts.
     auto alpha = torch::ones({display.size(0), display.size(1), 1}, display.options());
-    auto rgba = torch::cat({display, alpha}, /*dim=*/2);
-    auto cpu_image = rgba.to(torch::kCPU).contiguous();
+    auto rgba = torch::cat({display, alpha}, /*dim=*/2).contiguous();
+
+    if (interop_available_) {
+        // Fast path: GPU-to-GPU transfer via PBO (no CPU sync)
+        upload_texture_interop(rgba);
+        if (!interop_available_) {
+            // Interop failed mid-frame, fall back to CPU path
+            auto cpu_image = rgba.to(torch::kCPU).contiguous();
+            upload_texture(cpu_image);
+        }
+    } else {
+        auto cpu_image = rgba.to(torch::kCPU).contiguous();
+        upload_texture(cpu_image);
+    }
 
     // First-frame diagnostics to verify rendering is working
     if (frame_count_ == 0) {
-        float pixel_min = cpu_image.min().item<float>();
-        float pixel_max = cpu_image.max().item<float>();
-        float pixel_mean = cpu_image.mean().item<float>();
-        auto cam_t = camera_.target();
+        auto cpu_diag = rgba.to(torch::kCPU);
+        float pixel_min = cpu_diag.min().item<float>();
+        float pixel_max = cpu_diag.max().item<float>();
+        float pixel_mean = cpu_diag.mean().item<float>();
         spdlog::info("First frame: pixel range [{:.4f}, {:.4f}], mean={:.4f}, "
                      "resolution={}x{}, n_contrib max={}",
                      pixel_min, pixel_max, pixel_mean,
-                     framebuffer_width_, framebuffer_height_,
+                     rw, rh,
                      render_out.n_contrib.max().item<int>());
     }
     ++frame_count_;
 
-    upload_texture(cpu_image);
+    // Update dirty tracking state
+    last_camera_version_ = camera_.version();
+    last_render_settings_ = render_settings_;
+    last_render_mode_ = render_mode_;
+    last_render_width_ = framebuffer_width_;
+    last_render_height_ = framebuffer_height_;
+    last_was_interactive_ = camera_moved_this_frame_;
+}
 
-    // Draw fullscreen quad
+void Viewer::draw_scene() {
+    // Draw fullscreen quad with cached texture
     glClear(GL_COLOR_BUFFER_BIT);
 
     gl_UseProgram(shader_program_);
@@ -576,6 +765,13 @@ void Viewer::draw_imgui() {
         ImGui::Text("Gaussians: %lld", static_cast<long long>(model_.num_gaussians()));
         ImGui::Text("Max SH degree: %d", model_.max_sh_degree());
         ImGui::Text("Resolution: %d x %d", framebuffer_width_, framebuffer_height_);
+        if (render_width_ > 0 && render_height_ > 0 &&
+            (render_width_ != framebuffer_width_ || render_height_ != framebuffer_height_)) {
+            ImGui::Text("Render: %d x %d (interactive)", render_width_, render_height_);
+        } else {
+            ImGui::Text("Render: %d x %d", framebuffer_width_, framebuffer_height_);
+        }
+        ImGui::Text("Transfer: %s", interop_available_ ? "CUDA-GL interop" : "CPU fallback");
 
         // VRAM
         auto vram = vram_info_mb();
@@ -641,8 +837,14 @@ void Viewer::run() {
     while (!glfwWindowShouldClose(window_)) {
         glfwPollEvents();
         process_input();
+        check_dirty();
 
-        render_frame();
+        if (needs_render_) {
+            render_frame();
+            needs_render_ = false;
+        }
+
+        draw_scene();
         draw_imgui();
 
         glfwSwapBuffers(window_);

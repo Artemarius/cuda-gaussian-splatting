@@ -750,10 +750,23 @@ Reuses the existing CUDA rasterizer (`cugs::render()`) for GPU-accelerated splat
   - `viewer` executable in `apps/CMakeLists.txt`
   - `find_package(imgui CONFIG REQUIRED)` + `find_package(OpenGL REQUIRED)` added to root CMakeLists.txt
 
+### Performance Optimization (Issue 18)
+
+- [x] Static camera frame reuse — skip `render_frame()` when camera/settings unchanged, only redraw cached texture + ImGui
+- [x] CUDA-GL interop via PBO — `cudaGraphicsGLRegisterBuffer` eliminates GPU→CPU→GPU roundtrip
+- [x] Interactive resolution scaling — half resolution during camera drag, full resolution refinement when camera stops
+- [x] Camera version counter for change detection
+- [x] ImGui display of transfer mode and render resolution
+- [ ] Fix seam artifacts (horizontal, vertical, corner-like) visible during rendering — separate from Issue 17
+- [ ] Improve zoom responsiveness (scroll wheel causes severe FPS drops)
+- [ ] More aggressive resolution scaling or placeholder rendering during interaction
+- [ ] Investigate async double-buffering for latency hiding
+
 ### Performance Target
 
 - ≥30 FPS at 1080p for typical trained scenes (~1M Gaussians)
 - On RTX 3060 this should be achievable with the tile-based approach
+- Current state: static camera is fast (vsync-limited), interactive orbit/pan improved but not smooth, zoom is poor
 
 ### Definition of Done
 

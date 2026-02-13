@@ -36,6 +36,7 @@ public:
         azimuth_ = 0.0f;
         elevation_ = 20.0f;  // slight downward angle
         fov_y_ = 50.0f;      // degrees
+        ++version_;
     }
 
     /// @brief Initialize from Gaussian positions tensor (CPU, [N, 3]).
@@ -74,6 +75,7 @@ public:
         azimuth_ = 30.0f;    // angled view
         elevation_ = 20.0f;  // slight downward angle
         fov_y_ = 50.0f;
+        ++version_;
     }
 
     /// @brief Rotate the camera by mouse drag delta (in pixels).
@@ -84,6 +86,7 @@ public:
         elevation_ += dy * rotate_sensitivity_;
         // Clamp elevation to avoid gimbal lock
         elevation_ = std::clamp(elevation_, -89.0f, 89.0f);
+        ++version_;
     }
 
     /// @brief Pan the target point in the camera's local XY plane.
@@ -95,6 +98,7 @@ public:
         // Right direction is camera X (screen right)
         // Up direction is world up projected to camera plane (screen up)
         target_ += right * (-dx * scale) + up * (dy * scale);
+        ++version_;
     }
 
     /// @brief Zoom by adjusting the orbit radius.
@@ -102,6 +106,7 @@ public:
     void zoom(float delta) {
         radius_ *= (1.0f - delta * zoom_sensitivity_);
         radius_ = std::max(radius_, 0.01f);
+        ++version_;
     }
 
     /// @brief Construct a CameraInfo for the current orbit state.
@@ -164,13 +169,14 @@ public:
 
     // --- Accessors ---
 
+    uint64_t version() const { return version_; }
     Eigen::Vector3f target() const { return target_; }
     float radius() const { return radius_; }
     float azimuth() const { return azimuth_; }
     float elevation() const { return elevation_; }
     float fov_y() const { return fov_y_; }
 
-    void set_fov_y(float fov) { fov_y_ = std::clamp(fov, 10.0f, 120.0f); }
+    void set_fov_y(float fov) { fov_y_ = std::clamp(fov, 10.0f, 120.0f); ++version_; }
     void set_rotate_sensitivity(float s) { rotate_sensitivity_ = s; }
     void set_pan_sensitivity(float s) { pan_sensitivity_ = s; }
     void set_zoom_sensitivity(float s) { zoom_sensitivity_ = s; }
@@ -204,6 +210,7 @@ private:
         return {right, up, forward};
     }
 
+    uint64_t version_ = 0;
     Eigen::Vector3f target_ = Eigen::Vector3f::Zero();
     float radius_ = 5.0f;
     float azimuth_ = 0.0f;      // degrees
