@@ -51,6 +51,8 @@ find_package(Eigen3 CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
+find_package(imgui CONFIG REQUIRED)
+find_package(OpenGL REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 
 # stb — header-only, pulled via vcpkg
@@ -126,6 +128,21 @@ add_library(cugs_training
 )
 
 target_link_libraries(cugs_training PUBLIC cugs_utils cugs_data cugs_rasterizer)
+
+# -----------------------------------------------------------------------------
+# Internal library: cugs_viewer (real-time OpenGL viewer)
+# -----------------------------------------------------------------------------
+add_library(cugs_viewer
+    src/viewer/viewer.cpp
+)
+
+target_link_libraries(cugs_viewer PUBLIC
+    cugs_rasterizer
+    cugs_data
+    glfw
+    imgui::imgui
+    OpenGL::GL
+)
 
 # -----------------------------------------------------------------------------
 # Put all executables in the build root so they can find DLLs.

@@ -715,33 +715,40 @@ MCMC densification works and produces comparable quality with constant memory us
 
 ---
 
-## Phase 11: Real-Time Viewer
+## Phase 11: Real-Time Viewer ✅
 
 **Goal**: Interactive OpenGL viewer for trained models.
 
-### Note
+### Architecture
 
-This can be developed in parallel once Phase 2 (PLY I/O) is done. It shares no code with the training pipeline except the PLY format and Gaussian data structures.
+Reuses the existing CUDA rasterizer (`cugs::render()`) for GPU-accelerated splatting, then transfers the resulting `[H,W,3]` float tensor to CPU and uploads to an OpenGL texture for display as a fullscreen quad. This guarantees identical visual output to training.
 
 ### Tasks
 
-- [ ] `src/viewer/viewer.hpp/.cpp`
-  - GLFW window creation, OpenGL context (4.3+ for compute shaders, or just use fragment shaders)
-  - Load trained `.ply` model
-  - Camera controls: orbit, pan, zoom (mouse + keyboard)
-  - Render loop: project Gaussians → sort → splat (can be a simplified version of the rasterizer, or a compute shader reimplementation)
-- [ ] Render modes:
-  - RGB (default)
-  - Depth visualization
-  - Gaussian count per pixel (heatmap)
-- [ ] Dear ImGui overlay:
-  - FPS counter
-  - Camera parameters
-  - Number of Gaussians
-  - Render mode selector
-  - SH degree selector
-- [ ] `apps/viewer_main.cpp` — entry point
-  - `./build/viewer output/garden/point_cloud.ply`
+- [x] `src/viewer/camera_controller.hpp` — orbit camera controller
+  - Spherical coordinate system (azimuth, elevation, radius) around target point
+  - `rotate()`, `pan()`, `zoom()` methods for mouse input
+  - `build_camera()` produces `CameraInfo` with world-to-camera extrinsics + pinhole intrinsics
+  - Auto-initializes from Gaussian bounding box, gimbal lock clamping
+- [x] `src/viewer/viewer.hpp` — viewer class declaration
+  - `ViewerConfig` struct (width, height, background, sh_degree, vsync)
+  - `RenderMode` enum (RGB, Depth, Heatmap)
+- [x] `src/viewer/viewer.cpp` — viewer implementation
+  - GLFW window + OpenGL 2.1 context (no GLAD/GLEW — manual GL extension loading via `glfwGetProcAddress`)
+  - GLSL 120 fullscreen quad shader for texture display
+  - CUDA rasterizer integration: `render()` → CPU transfer → `glTexSubImage2D`
+  - Three render modes: RGB, depth (1-final_T with turbo colormap), heatmap (n_contrib normalized)
+  - ImGui overlay: FPS, Gaussian count, VRAM usage, render mode selector, SH degree slider, FOV control
+  - Mouse input: left-drag=orbit, middle/right-drag=pan, scroll=zoom
+  - Keyboard: 1/2/3 = render modes, Esc = quit
+  - `#define NOMINMAX` before all includes to avoid Windows min/max macro conflicts
+- [x] `apps/viewer_main.cpp` — CLI entry point
+  - `viewer <model.ply> [--width N] [--height N] [--background black|white] [--sh-degree 0-3] [--no-vsync]`
+  - CUDA validation, model loading, viewer launch
+- [x] CMake integration
+  - `cugs_viewer` library linking `cugs_rasterizer`, `cugs_data`, `glfw`, `imgui::imgui`, `OpenGL::GL`
+  - `viewer` executable in `apps/CMakeLists.txt`
+  - `find_package(imgui CONFIG REQUIRED)` + `find_package(OpenGL REQUIRED)` added to root CMakeLists.txt
 
 ### Performance Target
 

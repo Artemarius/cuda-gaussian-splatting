@@ -301,3 +301,33 @@ The existing VRAM guard in densification (`min_vram_headroom_mb = 512`) was insu
 **Lesson**: On WDDM GPUs that drive the desktop, CUDA OOM is not just a process-level error — it's a system-level failure. Memory safety must be proactive (budget-based), not reactive (catch OOM). The display driver needs a meaningful VRAM reservation (500-600 MB on a 6 GB card) that training must never encroach on.
 
 **Files**: `src/utils/cuda_utils.cuh`, `src/utils/memory_monitor.hpp` (new), `src/training/trainer.hpp`, `src/training/trainer.cpp`, `src/optimizer/densification.hpp`, `src/optimizer/densification.cpp`, `apps/train_main.cpp`
+
+---
+
+## Phase 11: Real-Time Viewer
+
+### Issue 15: Windows `GL/gl.h` only provides OpenGL 1.1 functions
+
+**Symptom**: `viewer.cpp` failed to compile with dozens of `identifier not found` errors for `glCreateShader`, `glGenBuffers`, `glUseProgram`, etc., plus `undeclared identifier` for constants like `GL_VERTEX_SHADER`, `GL_ARRAY_BUFFER`, `GL_RGB32F`.
+
+**Root cause**: On Windows, the system `<GL/gl.h>` header only declares OpenGL 1.1 functions and constants. Everything from GL 1.2+ (buffer objects, shaders, multitexture) must be loaded at runtime via `wglGetProcAddress` or a GL loader library (GLAD, GLEW). The project does not use a GL loader.
+
+**Fix**: Manually defined the ~25 GL 2.0+ function pointer types and constants needed for the fullscreen quad renderer. A `load_gl_functions()` helper loads them via `glfwGetProcAddress()` after context creation. All calls use `gl_` prefixed function pointers (e.g., `gl_CreateShader`, `gl_UseProgram`) instead of the standard names.
+
+**Lesson**: On Windows, any OpenGL usage beyond GL 1.1 requires explicit function loading. GLFW's `glfwGetProcAddress` works as a portable loader without adding GLAD/GLEW dependencies. When the project only needs ~25 functions for a simple textured quad, manual loading is simpler than adding a dependency.
+
+**Files**: `src/viewer/viewer.cpp`
+
+---
+
+### Issue 16: Windows `min`/`max` macros break libtorch and std::min/max
+
+**Symptom**: Cascading compile errors including `'(': illegal token on right side of '::'`, `not enough arguments for function-like macro invocation 'min'`, and `type 'unknown-type' unexpected` in code using `std::min`, `torch::clamp`, and `torch::min`.
+
+**Root cause**: `<windows.h>` defines `min` and `max` as preprocessor macros. These macros expand inside `std::min(...)`, `torch::clamp(...)`, and any template expression containing `min`/`max` as identifiers, corrupting the syntax.
+
+**Fix**: `#define NOMINMAX` before any includes — placed at the very top of the file, before `#include "viewer/viewer.hpp"`, because `torch/torch.h` (included transitively) may pull in `<windows.h>` internally.
+
+**Lesson**: In any Windows C++ project that uses `<windows.h>`, always define `NOMINMAX` before any includes. Placing it just before `#include <windows.h>` is insufficient if other headers include Windows headers first. Put it at the very top of the translation unit or in the CMake compile definitions.
+
+**Files**: `src/viewer/viewer.cpp`
