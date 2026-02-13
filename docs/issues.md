@@ -331,3 +331,29 @@ The existing VRAM guard in densification (`min_vram_headroom_mb = 512`) was insu
 **Lesson**: In any Windows C++ project that uses `<windows.h>`, always define `NOMINMAX` before any includes. Placing it just before `#include <windows.h>` is insufficient if other headers include Windows headers first. Put it at the very top of the translation unit or in the CMake compile definitions.
 
 **Files**: `src/viewer/viewer.cpp`
+
+---
+
+### Issue 17: Vertical seam/transition line on right side of viewer
+
+**Status**: Open
+
+**Symptom**: A visible vertical line appears on the right portion of the rendered viewer window. The line creates a sharp discontinuity where the image content or brightness abruptly transitions, as if two different regions are stitched together incorrectly. Visible in both still and orbiting views at 1280x720.
+
+**Screenshots**: `C:\Users\Artem\Documents\Lightshot\Screenshot_100.png`, `Screenshot_101.png`
+
+**Likely causes to investigate** (in order of probability):
+
+1. **GL_UNPACK_ALIGNMENT mismatch**: OpenGL defaults `GL_UNPACK_ALIGNMENT` to 4 bytes. The texture upload in `upload_texture()` uses `GL_RGB` + `GL_FLOAT` (12 bytes/pixel), so row stride = `W * 12`. For W=1280 this is 15360, divisible by 4, so alignment should be fine at 1280 — but if the framebuffer size differs from 1280 (e.g., DPI scaling), a non-aligned width could cause row shifting. Fix: call `glPixelStorei(GL_UNPACK_ALIGNMENT, 1)` before texture upload.
+
+2. **Framebuffer vs window size mismatch**: `glfwGetFramebufferSize()` may return a different size than the window pixel dimensions on high-DPI displays. If the CUDA rasterizer renders at window size but the texture is uploaded at framebuffer size (or vice versa), the rightmost columns could show stale/misaligned data.
+
+3. **Tensor memory stride**: The `display.to(torch::kCPU).contiguous()` call should produce a contiguous `[H,W,3]` tensor, but if the CUDA rasterizer's output tensor has unexpected strides (e.g., padded rows from tile-aligned allocation), `.contiguous()` might not resolve a subtle pitch mismatch. Verify with `tensor.strides()`.
+
+4. **Tile-boundary artifact in rasterizer**: The forward kernel (`forward.cu:71`) bounds-checks pixels with `inside = (px < img_w) && (py < img_h)`. With 16x16 tiles and W=1280 (exactly 80 tiles), this should be clean. But if the output tensor is allocated at tile-rounded dimensions rather than exact image dimensions, the extra columns would contain zeros (black) or uninitialized values.
+
+5. **Texture re-allocation logic**: In `upload_texture()`, the texture is only re-allocated via `glTexImage2D` when size changes; otherwise `glTexSubImage2D` is used. If the initial allocation size doesn't match the first frame's render dimensions, stale texture data could persist in part of the texture.
+
+**Additional observation**: The viewer runs with noticeable lag (~27ms/frame from the ImGui overlay), making interactive navigation difficult. This is a separate performance issue likely caused by the synchronous CUDA-to-CPU tensor transfer (`display.to(torch::kCPU)`) blocking the render loop.
+
+**Files to investigate**: `src/viewer/viewer.cpp` (upload_texture, render_frame), `src/rasterizer/forward.cu` (output tensor allocation), `src/rasterizer/rasterizer.hpp` (render function return tensor shapes)
