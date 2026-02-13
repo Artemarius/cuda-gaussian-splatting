@@ -5,12 +5,14 @@
 ///
 /// Provides an orbit camera that rotates around a target point with mouse
 /// drag, pans with middle-click, and zooms with scroll wheel. Produces
-/// CameraInfo structs compatible with the rasterizer.
+/// CameraInfo structs compatible with the rasterizer (COLMAP convention:
+/// X-right, Y-down, Z-forward).
 
 #include "core/types.hpp"
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <torch/torch.h>
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +23,7 @@ namespace cugs {
 ///
 /// The camera orbits around a target point in spherical coordinates
 /// (azimuth, elevation, radius). Produces world-to-camera rotation
-/// and translation matrices for the rasterizer.
+/// and translation matrices in COLMAP convention for the rasterizer.
 class CameraController {
 public:
     /// @brief Initialize the camera to view a scene bounding box.
@@ -30,25 +32,53 @@ public:
     void reset(const Eigen::Vector3f& bbox_min, const Eigen::Vector3f& bbox_max) {
         target_ = (bbox_min + bbox_max) * 0.5f;
         float extent = (bbox_max - bbox_min).norm();
-        radius_ = std::max(extent * 1.2f, 0.1f);
+        radius_ = std::max(extent * 1.5f, 0.1f);
         azimuth_ = 0.0f;
         elevation_ = 20.0f;  // slight downward angle
         fov_y_ = 50.0f;      // degrees
     }
 
-    /// @brief Initialize from Gaussian positions tensor.
-    /// @param positions [N, 3] float tensor of Gaussian means (CPU).
-    void reset_from_positions(const Eigen::Vector3f& center, float extent) {
-        target_ = center;
-        radius_ = std::max(extent * 2.5f, 0.1f);
-        azimuth_ = 0.0f;
-        elevation_ = 20.0f;
+    /// @brief Initialize from Gaussian positions tensor (CPU, [N, 3]).
+    ///
+    /// Computes a robust initial viewpoint by analyzing the point cloud
+    /// distribution. Uses the median center (robust to outliers) and
+    /// places the camera at a distance that frames the central 90% of
+    /// Gaussians in view.
+    void reset_from_positions(const torch::Tensor& positions_cpu) {
+        int64_t n = positions_cpu.size(0);
+        if (n == 0) {
+            target_ = Eigen::Vector3f::Zero();
+            radius_ = 5.0f;
+            return;
+        }
+
+        // Use median as robust center (outlier-resistant)
+        auto sorted_x = std::get<0>(positions_cpu.select(1, 0).sort(0));
+        auto sorted_y = std::get<0>(positions_cpu.select(1, 1).sort(0));
+        auto sorted_z = std::get<0>(positions_cpu.select(1, 2).sort(0));
+
+        int64_t mid = n / 2;
+        target_.x() = sorted_x[mid].item<float>();
+        target_.y() = sorted_y[mid].item<float>();
+        target_.z() = sorted_z[mid].item<float>();
+
+        // Use 5th-95th percentile range for extent (ignore extreme outliers)
+        int64_t p5 = n / 20;
+        int64_t p95 = n - 1 - p5;
+        float range_x = sorted_x[p95].item<float>() - sorted_x[p5].item<float>();
+        float range_y = sorted_y[p95].item<float>() - sorted_y[p5].item<float>();
+        float range_z = sorted_z[p95].item<float>() - sorted_z[p5].item<float>();
+        float extent = std::sqrt(range_x * range_x + range_y * range_y + range_z * range_z);
+
+        radius_ = std::max(extent * 1.2f, 0.1f);
+        azimuth_ = 30.0f;    // angled view
+        elevation_ = 20.0f;  // slight downward angle
         fov_y_ = 50.0f;
     }
 
     /// @brief Rotate the camera by mouse drag delta (in pixels).
     /// @param dx Horizontal pixel delta (positive = rotate right).
-    /// @param dy Vertical pixel delta (positive = rotate up).
+    /// @param dy Vertical pixel delta (positive = rotate down).
     void rotate(float dx, float dy) {
         azimuth_ -= dx * rotate_sensitivity_;
         elevation_ += dy * rotate_sensitivity_;
@@ -60,9 +90,10 @@ public:
     /// @param dx Horizontal pixel delta.
     /// @param dy Vertical pixel delta.
     void pan(float dx, float dy) {
-        // Compute camera right and up vectors
         auto [right, up, forward] = camera_axes();
         float scale = radius_ * pan_sensitivity_;
+        // Right direction is camera X (screen right)
+        // Up direction is world up projected to camera plane (screen up)
         target_ += right * (-dx * scale) + up * (dy * scale);
     }
 
@@ -74,6 +105,11 @@ public:
     }
 
     /// @brief Construct a CameraInfo for the current orbit state.
+    ///
+    /// Produces a world-to-camera transform in COLMAP convention:
+    /// X-right, Y-down, Z-forward. The camera looks along +Z in
+    /// camera space.
+    ///
     /// @param width  Image width in pixels.
     /// @param height Image height in pixels.
     /// @return CameraInfo with world-to-camera extrinsics and pinhole intrinsics.
@@ -81,14 +117,14 @@ public:
         float az_rad = azimuth_ * kDegToRad;
         float el_rad = elevation_ * kDegToRad;
 
-        // Camera position in world space (spherical → Cartesian)
+        // Camera position in world space (spherical -> Cartesian)
         float cos_el = std::cos(el_rad);
         Eigen::Vector3f cam_pos;
         cam_pos.x() = target_.x() + radius_ * cos_el * std::sin(az_rad);
         cam_pos.y() = target_.y() + radius_ * std::sin(el_rad);
         cam_pos.z() = target_.z() + radius_ * cos_el * std::cos(az_rad);
 
-        // Build look-at rotation (world-to-camera)
+        // Build look-at vectors in world space
         Eigen::Vector3f forward = (target_ - cam_pos).normalized();
         Eigen::Vector3f world_up(0.0f, 1.0f, 0.0f);
         Eigen::Vector3f right = forward.cross(world_up).normalized();
@@ -99,11 +135,14 @@ public:
         }
         Eigen::Vector3f up = right.cross(forward).normalized();
 
-        // World-to-camera rotation: rows are right, up, -forward
+        // World-to-camera rotation in COLMAP convention:
+        //   X_cam = right     (row 0)
+        //   Y_cam = -up       (row 1, Y points down)
+        //   Z_cam = forward   (row 2, Z points into the scene)
         Eigen::Matrix3f R;
         R.row(0) = right;
-        R.row(1) = up;
-        R.row(2) = -forward;
+        R.row(1) = -up;
+        R.row(2) = forward;
 
         // World-to-camera translation: t = -R * cam_pos
         Eigen::Vector3f t = -R * cam_pos;

@@ -228,17 +228,12 @@ Viewer::Viewer(std::filesystem::path ply_path, ViewerConfig config)
                                  : model_.max_sh_degree();
     std::memcpy(render_settings_.background, config_.background, sizeof(float) * 3);
 
-    // Initialize camera from model bounds
+    // Initialize camera from Gaussian positions (robust median-based viewpoint)
     auto positions_cpu = model_.positions.to(torch::kCPU);
-    auto pos_min = std::get<0>(positions_cpu.min(0));
-    auto pos_max = std::get<0>(positions_cpu.max(0));
-    Eigen::Vector3f bbox_min(pos_min[0].item<float>(),
-                             pos_min[1].item<float>(),
-                             pos_min[2].item<float>());
-    Eigen::Vector3f bbox_max(pos_max[0].item<float>(),
-                             pos_max[1].item<float>(),
-                             pos_max[2].item<float>());
-    camera_.reset(bbox_min, bbox_max);
+    camera_.reset_from_positions(positions_cpu);
+    spdlog::info("Camera: target=({:.2f}, {:.2f}, {:.2f}), radius={:.2f}, az={:.1f}, el={:.1f}",
+                 camera_.target().x(), camera_.target().y(), camera_.target().z(),
+                 camera_.radius(), camera_.azimuth(), camera_.elevation());
 }
 
 Viewer::~Viewer() {
@@ -496,6 +491,21 @@ void Viewer::render_frame() {
 
     // Transfer to CPU and upload to GL texture
     auto cpu_image = display.to(torch::kCPU).contiguous();
+
+    // First-frame diagnostics to verify rendering is working
+    if (frame_count_ == 0) {
+        float pixel_min = cpu_image.min().item<float>();
+        float pixel_max = cpu_image.max().item<float>();
+        float pixel_mean = cpu_image.mean().item<float>();
+        auto cam_t = camera_.target();
+        spdlog::info("First frame: pixel range [{:.4f}, {:.4f}], mean={:.4f}, "
+                     "resolution={}x{}, n_contrib max={}",
+                     pixel_min, pixel_max, pixel_mean,
+                     framebuffer_width_, framebuffer_height_,
+                     render_out.n_contrib.max().item<int>());
+    }
+    ++frame_count_;
+
     upload_texture(cpu_image);
 
     // Draw fullscreen quad

@@ -93,6 +93,7 @@ private:
     double last_frame_time_ = 0.0;
     float frame_dt_ = 0.0f;
     float fps_ = 0.0f;
+    int frame_count_ = 0;
 
     // Mouse state
     bool mouse_left_down_ = false;
